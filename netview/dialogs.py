@@ -162,8 +162,15 @@ class AlertDetailDialog(QDialog):
         form = QFormLayout()
         form.addRow('Jenis:', QLabel(alert.get('kind', '-')))
         form.addRow('Tingkat:', QLabel(alert.get('severity', '-')))
-        form.addRow('IP:', QLabel(alert.get('ip') or '-'))
-        form.addRow('MAC:', QLabel(alert.get('mac') or '-'))
+        form.addRow('MAC Penyerang:',
+                    QLabel(alert.get('attacker_mac', '') or
+                           alert.get('mac', '') or '-'))
+        form.addRow('Target (IP):',
+                    QLabel(alert.get('victim_ip', '') or
+                           alert.get('ip', '') or '-'))
+        vm = alert.get('victim_mac', '')
+        if vm:
+            form.addRow('MAC Target (asli):', QLabel(vm))
         v.addLayout(form)
         msg = QLabel(alert.get('message', ''))
         msg.setWordWrap(True)

@@ -2,7 +2,8 @@
 from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt5.QtGui import QColor, QBrush
 
-HEADERS = ['Waktu', 'Tingkat', 'Jenis', 'IP', 'MAC', 'Keterangan']
+HEADERS = ['Waktu', 'Tingkat', 'Jenis', 'Penyerang (MAC)',
+           'Target (IP)', 'Keterangan']
 
 SEV_COLOR = {
     'critical': QColor(140, 30, 30),
@@ -46,8 +47,8 @@ class AlertModel(QAbstractTableModel):
                 0: _fmt_time(a.get('timestamp', 0)),
                 1: a.get('severity', ''),
                 2: a.get('kind', ''),
-                3: a.get('ip', ''),
-                4: a.get('mac', ''),
+                3: a.get('attacker_mac', '') or a.get('mac', ''),
+                4: a.get('victim_ip', '') or a.get('ip', ''),
                 5: a.get('message', ''),
             }.get(col, '')
 

@@ -31,17 +31,33 @@ _DEDUP_TTL = 20.0
 
 
 class Alert(object):
-    def __init__(self, kind, severity, message, ip='', mac='', details=None):
+    """
+    Sebuah alert. Penting: `attacker_mac` = MAC yang DITUDUH menyerang,
+    `victim_ip`/`victim_mac` = korban (mis. gateway yang diklaim).
+
+    `ip`/`mac` dipertahankan sebagai field umum demi kompatibilitas GUI,
+    tapi makna sebenarnya ada di attacker_mac / victim_ip.
+    """
+
+    def __init__(self, kind, severity, message, ip='', mac='',
+                 details=None, attacker_mac='', victim_ip='', victim_mac=''):
         self.kind = kind
         self.severity = severity
         self.message = message
+        # field umum (kompat)
         self.ip = ip
         self.mac = mac
+        # field eksplisit
+        self.attacker_mac = (attacker_mac or mac or '').lower()
+        self.victim_ip = victim_ip
+        self.victim_mac = victim_mac
         self.details = details or {}
         self.timestamp = time.time()
 
     def key(self):
-        return '{}|{}|{}'.format(self.kind, self.ip, self.mac)
+        # dedup berdasarkan jenis + penyerang + korban (stabil walau
+        # alert dipicu berulang cepat)
+        return '{}|{}|{}'.format(self.kind, self.attacker_mac, self.victim_ip or self.ip)
 
     def to_dict(self):
         return {
@@ -50,6 +66,9 @@ class Alert(object):
             'message': self.message,
             'ip': self.ip,
             'mac': self.mac,
+            'attacker_mac': self.attacker_mac,
+            'victim_ip': self.victim_ip,
+            'victim_mac': self.victim_mac,
             'details': self.details,
             'timestamp': self.timestamp,
         }
@@ -148,7 +167,10 @@ class Detector(object):
         return self._dedup(found)
 
     def _rule_gateway_mac_changed(self):
-        """Gateway MAC sekarang != baseline -> serangan MITM."""
+        """
+        Ada MAC (selain MAC gateway asli) yang MENGAKUI dirinya gateway.
+        Penyerang = MAC asing itu. Korban = IP gateway.
+        """
         out = []
         if not self.gateway_ip:
             return out
@@ -160,25 +182,38 @@ class Detector(object):
             if mac.lower() != expect.lower():
                 out.append(Alert(
                     'GATEWAY_MAC_CHANGED', SEV_CRIT,
-                    'Gateway {} diklaim MAC asing {} (harusnya {}) — '
+                    'MAC asing {} mengaku sebagai gateway {} (MAC asli {}) — '
                     'indikasi ARP spoofing/MITM!'.format(
-                        self.gateway_ip, mac, expect),
+                        mac, self.gateway_ip, expect),
                     ip=self.gateway_ip, mac=mac,
-                    details={'expected_mac': expect, 'seen_mac': mac}))
+                    attacker_mac=mac,
+                    victim_ip=self.gateway_ip, victim_mac=expect,
+                    details={'expected_mac': expect, 'seen_mac': mac,
+                             'attacker': mac, 'victim': self.gateway_ip}))
         return out
 
     def _rule_ip_multiple_macs(self):
-        """Satu IP diklaim lebih dari satu MAC."""
+        """Satu IP diklaim lebih dari satu MAC (IP conflict/spoof)."""
         out = []
         for ip, macs in self.ip_macs.items():
             real = [m for m in macs if not self._whitelisted(ip, m)]
             if len(real) > 1:
+                # tentukan penyerang: MAC yang bukan baseline untuk IP ini
+                expect = self.baseline.get(ip)
+                attacker = ''
+                if expect:
+                    others = [m for m in real if m.lower() != expect.lower()]
+                    if others:
+                        attacker = others[0]
                 out.append(Alert(
                     'IP_MULTIPLE_MACS', SEV_WARN,
                     'IP {} diklaim {} MAC berbeda: {}'.format(
                         ip, len(real), ', '.join(sorted(real))),
                     ip=ip, mac=','.join(sorted(real)),
-                    details={'macs': sorted(real)}))
+                    attacker_mac=attacker,
+                    victim_ip=ip, victim_mac=expect or '',
+                    details={'macs': sorted(real), 'expected_mac': expect or '',
+                             'attacker': attacker}))
         return out
 
     def _rule_mac_multiple_ips(self):
@@ -186,14 +221,14 @@ class Detector(object):
         out = []
         for mac, ips in self.mac_ips.items():
             real = [i for i in ips if not self._whitelisted(i, mac)]
-            # abaikan gateway (router sah punya banyak? tidak—biasanya 1)
             if len(real) > 2:
                 out.append(Alert(
                     'MAC_MULTIPLE_IPS', SEV_WARN,
                     'MAC {} mengklaim {} IP berbeda: {}'.format(
                         mac, len(real), ', '.join(sorted(real))),
                     ip=','.join(sorted(real)), mac=mac,
-                    details={'ips': sorted(real)}))
+                    attacker_mac=mac,
+                    details={'ips': sorted(real), 'attacker': mac}))
         return out
 
     def _rule_garp_flood(self):
@@ -206,22 +241,27 @@ class Detector(object):
                     'Gratuitous ARP flood dari MAC {} ({} paket / {}s) — '
                     'kemungkinan ARP poisoning agresif'.format(
                         mac, len(times), int(_GARP_WINDOW)),
-                    mac=mac, details={'count': len(times)}))
+                    mac=mac, attacker_mac=mac,
+                    details={'count': len(times), 'attacker': mac}))
         return out
 
     def _rule_gateway_random_mac(self):
-        """Gateway memakai MAC acak/privat — mencurigakan."""
+        """Ada MAC acak/privat yang mengaku gateway — mencurigakan."""
         out = []
         if not self.gateway_ip:
             return out
         from utils import is_random_mac
+        expect = self.baseline.get(self.gateway_ip) or self.gateway_mac
         for mac in self.ip_macs.get(self.gateway_ip, {}):
-            if is_random_mac(mac):
+            # hanya mencurigakan kalau BUKAN MAC gateway asli
+            if is_random_mac(mac) and (not expect or mac.lower() != expect.lower()):
                 out.append(Alert(
                     'GATEWAY_RANDOM_MAC', SEV_WARN,
-                    'Gateway {} memakai MAC acak/privat {} — mencurigakan'.format(
-                        self.gateway_ip, mac),
-                    ip=self.gateway_ip, mac=mac))
+                    'MAC acak {} mengaku sebagai gateway {} — mencurigakan'.format(
+                        mac, self.gateway_ip),
+                    ip=self.gateway_ip, mac=mac, attacker_mac=mac,
+                    victim_ip=self.gateway_ip, victim_mac=expect or '',
+                    details={'attacker': mac, 'victim': self.gateway_ip}))
         return out
 
     def _rule_out_of_subnet(self):
@@ -232,17 +272,17 @@ class Detector(object):
         prefix = '.'.join(self.gateway_ip.split('.')[:3]) + '.'
         for ip in self.ip_macs:
             if not ip.startswith(prefix):
-                # IP di luar /24 gateway
                 for mac in self.ip_macs[ip]:
                     out.append(Alert(
                         'OUT_OF_SUBNET_CLAIM', SEV_INFO,
                         'ARP mengklaim IP luar subnet {} dari MAC {}'.format(
                             ip, mac),
-                        ip=ip, mac=mac))
+                        ip=ip, mac=mac, attacker_mac=mac,
+                        details={'attacker': mac}))
         return out
 
     def _rule_duplicate_mac(self):
-        """Dua IP berbeda memakai MAC sama (bisa normal utk router, tapi pantau)."""
+        """MAC sama dipakai gateway & host lain (pantau)."""
         out = []
         for mac, ips in self.mac_ips.items():
             if len(ips) == 2 and self.gateway_ip in ips:
@@ -250,9 +290,9 @@ class Detector(object):
                 if other and not self._whitelisted(other[0], mac):
                     out.append(Alert(
                         'DUPLICATE_MAC_OUI', SEV_INFO,
-                        'MAC {} dipakai oleh gateway dan {}'.format(
-                            mac, other[0]),
-                        ip=other[0], mac=mac))
+                        'MAC {} dipakai gateway dan {}'.format(mac, other[0]),
+                        ip=other[0], mac=mac, attacker_mac=mac,
+                        details={'attacker': mac}))
         return out
 
     # ── dedup & riwayat ────────────────────────────────────────────
@@ -285,21 +325,51 @@ class Detector(object):
     def threat_map(self):
         """
         Kembalikan {ip: status} dengan status:
-          'attacker' jika IP terkait alert critical
-          'suspicious' jika terkait warning
-          '' normal
+          'attacker'   -> host (IP) terbukti menyerang
+          'suspicious' -> perlu dicurigai
+          ''           -> normal
+
+        PENTING: gateway/korban TIDAK boleh ditandai penyerang hanya
+        karena IP-nya dipakai dalam alert. Yang menyerang adalah MAC
+        asing; itu dipetakan lewat IP penyerang (kalau diketahui) atau
+        tidak dipetakan ke IP sama sekali (cukup muncul di tab Alerts).
         """
         res = {}
+        attacker_ips = set()   # IP yang benar-benar milik penyerang
+        victim_ips = set()     # IP korban (gateway/IP yang diklaim)
+
         for a in self._alert_log[-500:]:
-            if not a.ip:
+            # kumpulkan IP korban dari alert yang menyebut attacker
+            atk = (getattr(a, 'attacker_mac', '') or '')
+            if not atk:
                 continue
-            for ip in a.ip.split(','):
+            # IP korban (yg diklaim) jangan ditandai penyerang
+            if a.victim_ip:
+                victim_ips.add(a.victim_ip)
+            # IP penyerang = IP asli si MAC penyerang (kalau kita tahu
+            # dia juga punya IP sendiri). Kita cari dari self.mac_ips.
+            for ip_assoc in self.mac_ips.get(atk, {}):
+                if ip_assoc not in victim_ips:
+                    attacker_ips.add(ip_assoc)
+
+        # tandai penyerang
+        for ip in attacker_ips:
+            res[ip] = 'attacker'
+
+        # tandai suspect untuk IP yang terkait warning (kecuali korban)
+        for a in self._alert_log[-500:]:
+            if a.severity != SEV_WARN:
+                continue
+            for ip in (a.ip or '').split(','):
                 ip = ip.strip()
-                if not ip:
+                if not ip or ip in victim_ips or ip == self.gateway_ip:
                     continue
-                cur = res.get(ip, '')
-                if a.severity == SEV_CRIT:
-                    res[ip] = 'attacker'
-                elif a.severity == SEV_WARN and cur != 'attacker':
+                if res.get(ip) != 'attacker':
                     res[ip] = 'suspicious'
+
+        # gateway & device sendiri selalu dianggap normal
+        if self.gateway_ip:
+            res.pop(self.gateway_ip, None)
+        if self.my_ip:
+            res.pop(self.my_ip, None)
         return res
