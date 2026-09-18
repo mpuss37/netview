@@ -493,24 +493,29 @@ class Monitor(object):
                     # sudut merata berurutan -> tetangga RTT = tetangga sudut
                     self.node_angles[ip] = (idx / max(n, 1)) * 2 * math.pi
 
-            # ── cincin kelas RTT (radius tetap per kelas) ───────────
-            # Kelas dibuat dari kuartil RTT host yang ada RTT-nya.
-            rtt_vals = sorted(v for v in self.rtt.values()
-                              if v is not None and v > 0)
+            # ── radius PROPORSIONAL terhadap RTT ────────────────────
+            # Router = titik pusat. Makin dekat ke router (RTT kecil) ->
+            # makin dekat ke pusat. Makin jauh (RTT besar) -> makin ke tepi.
+            # Pakai skala LOG karena RTT rentangnya lebar (1 ms .. 1000 ms),
+            # supaya perbedaan kecil di RTT rendah tetap terlihat.
+            import math as _m
+            rtt_vals = [v for v in self.rtt.values()
+                        if v is not None and v > 0]
+            if rtt_vals:
+                lo = max(min(rtt_vals), 0.1)
+                hi = max(max(rtt_vals), lo * 1.01)
+            else:
+                lo, hi = 1.0, 100.0
+            log_lo = _m.log10(lo)
+            log_hi = _m.log10(hi)
+            R_MIN, R_MAX = 0.16, 0.48   # radius terdekat .. terjauh
 
-            def _rtt_class(rtt):
+            def _rtt_radius(rtt):
                 if rtt is None or rtt <= 0:
-                    return 2  # tanpa RTT -> ring sedang
-                if not rtt_vals:
-                    return 2
-                # pecah jadi 4 kelas berdasarkan posisi relatif
-                import bisect
-                pos = bisect.bisect_left(rtt_vals, rtt)
-                frac = pos / max(len(rtt_vals) - 1, 1)  # 0..1
-                return min(3, int(frac * 4))
-
-            # radius per kelas (cincin tetap)
-            RING_RADIUS = {0: 0.18, 1: 0.28, 2: 0.38, 3: 0.48}
+                    return (R_MIN + R_MAX) / 2.0   # tanpa RTT -> tengah
+                frac = (_m.log10(max(rtt, lo)) - log_lo) / max(log_hi - log_lo, 1e-6)
+                frac = max(0.0, min(1.0, frac))
+                return R_MIN + (R_MAX - R_MIN) * frac
 
             gw_mac = self.gw.get('mac') or ''
             links_virtual = []
@@ -532,16 +537,15 @@ class Monitor(object):
                 else:
                     kind = 'host'
                     rtt = self.rtt.get(ip)
-                    cls = _rtt_class(rtt)
-                    radius = RING_RADIUS[cls]
+                    radius = _rtt_radius(rtt)   # proporsional terhadap RTT
                     if threat == 'attacker':
-                        radius = 0.48   # penyerang di ring terluar
+                        radius = R_MAX   # penyerang di tepi terluar
                     ang = self.node_angles.get(ip, 0.0)
                     pos = {
                         'x': 0.5 + radius * math.cos(ang),
                         'y': 0.5 + radius * math.sin(ang),
                         'r': radius,
-                        'ring': cls,
+                        'ring': round(radius, 3),
                     }
                     label = h.get('hostname') or ip
 

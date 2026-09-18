@@ -79,12 +79,23 @@ function draw() {
     const base = Math.min(w, h) * 0.92;
     const cx = w / 2 + view.offsetX;
     const cy = h / 2 + view.offsetY;
-    ctx.strokeStyle = 'rgba(120,130,140,0.14)';
+    // cincin sebagai skala "jarak dari router" (pusat = router)
+    const rings = [0.16, 0.32, 0.48];
+    const labels = ['dekat', 'sedang', 'jauh'];
     ctx.setLineDash([4, 6]);
-    for (const r of [0.16, 0.28, 0.40, 0.46]) {
+    for (let i = 0; i < rings.length; i++) {
+      ctx.strokeStyle = 'rgba(120,130,140,0.18)';
       ctx.beginPath();
-      ctx.arc(cx, cy, r * base * view.scale, 0, Math.PI * 2);
+      ctx.arc(cx, cy, rings[i] * base * view.scale, 0, Math.PI * 2);
       ctx.stroke();
+      // label cincin
+      ctx.save();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(139,146,154,0.7)';
+      ctx.font = '11px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText(labels[i], cx + rings[i] * base * view.scale + 4, cy - 4);
+      ctx.restore();
     }
     ctx.setLineDash([]);
   }
