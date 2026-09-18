@@ -120,15 +120,43 @@ function draw() {
     ctx.setLineDash([]);
   }
 
-  // nodes
+  // nodes — hitung posisi layar dulu (termasuk repulsion halus)
+  const placed = [];
   for (const n of DATA.nodes) {
     const p = toScreen(n.pos);
+    placed.push({ n, x: p.x, y: p.y, r: nodeRadius(n) });
+  }
+  // repulsion pass: pastikan tidak bertumpuk di layar (fallback halus)
+  const MIN_GAP = 46;
+  for (let it = 0; it < 6; it++) {
+    let moved = false;
+    for (let i = 0; i < placed.length; i++) {
+      for (let j = i + 1; j < placed.length; j++) {
+        const a = placed[i], b = placed[j];
+        const dx = a.x - b.x, dy = a.y - b.y;
+        let d = Math.hypot(dx, dy);
+        if (d === 0) { a.x += 0.5; b.x -= 0.5; moved = true; continue; }
+        const need = a.r + b.r + 14;   // jarak minimum
+        if (d < need) {
+          const push = (need - d) / 2;
+          const ux = dx / d, uy = dy / d;
+          a.x += ux * push; a.y += uy * push;
+          b.x -= ux * push; b.y -= uy * push;
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+
+  // gambar node
+  for (const pl of placed) {
+    const n = pl.n, p = { x: pl.x, y: pl.y };
     const baseR = nodeRadius(n);
     const isAtk = n.threat === 'attacker';
     const r = isAtk ? baseR + 4 * pulse : baseR;
 
     if (isAtk) {
-      // halo denyut
       const halo = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * 2.4);
       halo.addColorStop(0, `rgba(229,72,77,${0.35 + 0.3 * pulse})`);
       halo.addColorStop(1, 'rgba(229,72,77,0)');
@@ -163,12 +191,29 @@ function draw() {
       ctx.fillText('!', p.x, p.y + 1);
     }
 
-    // label
-    ctx.fillStyle = '#e6e8ea';
-    ctx.font = '12px system-ui';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    // label — sembunyikan kalau terlalu dekat dengan label lain
     const lbl = n.ip + (n.label && n.label !== n.ip ? '  ' + n.label : '');
-    ctx.fillText(lbl, p.x, p.y + r + 4);
+    ctx.font = '12px system-ui';
+    const ly = p.y + r + 4;
+    const lw = ctx.measureText(lbl).width;
+    const rect = { x: p.x - lw / 2, y: ly, w: lw, h: 14 };
+    let clash = false;
+    for (const o of placed) {
+      if (o.n === n) continue;
+      const lo = o._labelRect;
+      if (lo && !(rect.x + rect.w < lo.x || rect.x > lo.x + lo.w ||
+                  rect.y + rect.h < lo.y || rect.y > lo.y + lo.h)) {
+        clash = true; break;
+      }
+    }
+    if (!clash) {
+      pl._labelRect = rect;
+      ctx.fillStyle = '#e6e8ea';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(lbl, p.x, ly);
+    } else {
+      pl._labelRect = null;
+    }
   }
 }
 
@@ -201,10 +246,12 @@ canvas.addEventListener('mousemove', (e) => {
     tooltip.classList.remove('hidden');
     tooltip.style.left = (mx + 14) + 'px';
     tooltip.style.top = (my + 14) + 'px';
+    const dist = n.distance && n.distance.text ? n.distance.text : '-';
     tooltip.innerHTML =
       `<b>${n.ip}</b><br>MAC: ${n.mac || '-'}<br>` +
       `Vendor: ${n.vendor || '-'}<br>` +
       `RTT: ${n.rtt != null ? n.rtt + ' ms' : '-'}<br>` +
+      `Estimasi jarak: <b>${dist}</b><br>` +
       `Aktivitas ARP: ${n.activity}`;
   } else {
     tooltip.classList.add('hidden');
@@ -254,9 +301,13 @@ function selectNode(n) {
     <div class="row"><span class="k">MAC</span>${n.mac || '-'}</div>
     <div class="row"><span class="k">Vendor</span>${n.vendor || '-'}</div>
     <div class="row"><span class="k">RTT</span>${n.rtt != null ? n.rtt + ' ms' : '-'}</div>
+    <div class="row"><span class="k">Estimasi jarak</span>
+      <b>${n.distance && n.distance.text ? n.distance.text : '-'}</b>
+      ${n.distance && n.distance.cm != null ? `<span class="muted">(${n.distance.cm} cm / ${n.distance.mm} mm)</span>` : ''}
+    </div>
     <div class="row"><span class="k">Aktivitas</span>${n.activity} paket ARP</div>
     <div class="row"><span class="k">Peran</span>${n.kind === 'gateway' ? 'Gateway'
-      : n.kind === 'self' ? 'Perangkat ini' : 'Host'}</div>
+      : n.kind === 'self' ? 'Perangkat ini' : n.kind === 'attacker' ? 'Penyerang' : 'Host'}</div>
   `;
   if (n.alt_macs && n.alt_macs.length) {
     html += `<div class="row"><span class="k">MAC lain</span>${n.alt_macs.join(', ')}</div>`;
@@ -297,9 +348,12 @@ async function refresh() {
       DATA = j.topology;
       const threats = DATA.nodes.filter(n => n.threat === 'attacker').length;
       const susp = DATA.nodes.filter(n => n.threat === 'suspicious').length;
+      const rssi = DATA.meta && DATA.meta.ap_rssi != null
+        ? DATA.meta.ap_rssi + ' dBm' : '-';
       statsEl.textContent =
         `Host: ${DATA.nodes.length}  |  Penyerang: ${threats}  |  ` +
-        `Mencurigakan: ${susp}  |  Link: ${DATA.links.length}`;
+        `Mencurigakan: ${susp}  |  Link: ${DATA.links.length}  |  ` +
+        `Sinyal ke AP: ${rssi}`;
     }
   } catch (e) {
     statsEl.textContent = 'gagal memuat data';

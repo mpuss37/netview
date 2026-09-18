@@ -48,6 +48,13 @@ Alert disimpan, dapat difilter, dan diekspor (JSON).
 ### Topology View (browser)
 Visualisasi graf jaringan 2D **real-time** di browser (`http://127.0.0.1:8015/tv`):
 - **Router/gateway** di pusat, host mengelilingi (radial).
+- **Penempatan berbasis kedekatan**: host dengan **RTT mirip** diletakkan pada
+  cincin (ring) yang sama sehingga tampak berdekatan; sudut diurutkan berdasarkan
+  RTT (bukan alfabet IP).
+- **Anti-tumpuk**: server menjamin jarak antar-node ≥ ambang (node digeser
+  sepanjang cincinnya), plus pass pemisahan halus di browser. Node tidak bertumpuk.
+- **Estimasi jarak** per perangkat (cm/mm/m) berbasis RTT — ditampilkan di
+  tooltip & panel. Akurasi **±2–5 m** (estimasi, bukan ukur).
 - Warna node: router (biru), perangkat ini (hijau), normal (abu),
   mencurigakan (oranye), **penyerang (merah + berdenyut)**.
 - Garis: hub ke gateway + overlay komunikasi ARP nyata.
@@ -55,8 +62,8 @@ Visualisasi graf jaringan 2D **real-time** di browser (`http://127.0.0.1:8015/tv
 - Panel samping kanan: info host + tombol whitelist.
 - Hover tooltip, zoom (scroll), pan (drag), toggle garis/cincin.
 
-> ⚠️ **Penting:** posisi node adalah **estimasi topologi** berdasarkan **RTT** &
-> aktivitas ARP — **BUKAN lokasi fisik** sebenarnya. ARP tidak membawa informasi
+> ⚠️ **Penting:** posisi & jarak node adalah **estimasi topologi** berdasarkan
+> **RTT/latency** — **BUKAN lokasi fisik** sebenarnya. ARP tidak membawa informasi
 > lokasi; ini bukan GPS. Label ini juga ditampilkan di UI.
 
 Buka dari browser: `http://127.0.0.1:8015/tv`

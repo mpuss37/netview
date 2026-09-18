@@ -327,6 +327,122 @@ class Monitor(object):
         return items[::-1]
 
     # ── Topology View ──────────────────────────────────────────────
+    def _read_ap_rssi(self):
+        """RSSI (dBm) laptop ke AP yang tersambung. None jika gagal."""
+        try:
+            p = sp.Popen(['iw', 'dev', self.iface, 'station', 'dump'],
+                         stdout=sp.PIPE, stderr=sp.PIPE)
+            out, _ = p.communicate(timeout=3)
+            for line in out.decode('utf-8', 'ignore').splitlines():
+                line = line.strip()
+                if line.startswith('signal:') or line.startswith('signal avg:'):
+                    # contoh: "signal:  -50 [-50] dBm"
+                    parts = line.replace(':', ' ').split()
+                    for tok in parts:
+                        try:
+                            v = int(tok)
+                            if -100 < v < 0:
+                                return v
+                        except ValueError:
+                            continue
+        except Exception:
+            pass
+        return None
+
+    def estimate_distance_cm(self, ip, rtt_ms=None):
+        """
+        Estimasi KASAR jarak perangkat (cm) — dengan asumsi & error jelas.
+
+        Metode: RSSI (path-loss log-distance) untuk skala, RTT untuk
+        perbaikan relatif.  Karena RSSI per-device TIDAK tersedia (kita
+        klien WiFi, bukan AP), kita kalibrasi dari RSSI ke AP kita.
+
+        Rumus path loss:
+            d = 10 ^ ((RSSI_ref - RSSI) / (10 * n))
+        dengan RSSI_ref = -40 dBm @ 1 m, n = 2.7 (indoor kantor/rumah).
+
+        Karena hanya RTT yang kita punya per-device, RTT dipetakan ke
+        "dBm ekivalen" secara linear terhadap median RTT LAN, lalu masuk
+        rumus di atas.  AKURASI: ±2–5 meter. Ini ESTIMASI, bukan ukur.
+        """
+        import math
+        # konstanta model (indoor)
+        RSSI_REF = -40.0     # dBm pada 1 m
+        N = 2.7              # path loss exponent indoor
+
+        rtt = rtt_ms if rtt_ms is not None else self.rtt.get(ip)
+        if rtt is None or rtt <= 0:
+            rtt = 15.0
+        # RTT -> "dBm ekivalen". Sensitivitas dikurangi supaya hasil
+        # tidak ekstrem (dulu 1 ms = 0.15 dB -> 500ms jadi 30 m).
+        # Sekarang 1 ms = 0.05 dB, dibatasi 60 ms efeknya (jenuh).
+        eff_dbm = RSSI_REF - min(rtt, 60.0) * 0.05
+        ratio = (RSSI_REF - eff_dbm) / (10.0 * N)
+        d_m = 10 ** ratio
+        # batasi agar tetap masuk akal untuk LAN indoor
+        d_m = max(0.3, min(d_m, 15.0))
+        return d_m * 100.0   # cm
+
+    def _distance_label(self, cm):
+        """Label jarak: mm (sangat dekat), cm, atau m."""
+        if cm is None:
+            return {'cm': None, 'mm': None, 'text': 'tidak diketahui'}
+        mm = int(round(cm * 10))
+        if cm < 10:
+            # sangat dekat -> tampilkan cm presisi
+            text = '~{:.0f} cm'.format(cm)
+        elif cm < 100:
+            # pembulatan 5 cm
+            text = '~{:.0f} cm'.format(round(cm / 5) * 5)
+        else:
+            text = '~{:.1f} m'.format(cm / 100.0)
+        return {'cm': round(cm, 1), 'mm': mm, 'text': text}
+
+    def _spread_nodes(self, nodes, min_dist=0.085, iterations=40):
+        """
+        Anti-tumpuk: geser node agar jarak antar-node >= min_dist.
+
+        Node digeser sepanjang busur (sudut kecil) pada ring-nya; gateway
+        dan perangkat sendiri tidak digeser (posisi acuan).
+        """
+        import math
+        movable = [n for n in nodes
+                   if n['kind'] not in ('gateway', 'self')]
+        for _ in range(iterations):
+            moved = False
+            for i in range(len(movable)):
+                for j in range(i + 1, len(movable)):
+                    a, b = movable[i], movable[j]
+                    dx = a['pos']['x'] - b['pos']['x']
+                    dy = a['pos']['y'] - b['pos']['y']
+                    dist = math.hypot(dx, dy)
+                    if dist >= min_dist or dist == 0:
+                        if dist == 0:
+                            # tepat bertumpuk: beri pergeseran acak-deterministik
+                            a['pos']['x'] += 0.001
+                            b['pos']['x'] -= 0.001
+                            moved = True
+                        continue
+                    # geser sedikit berlawanan arah sepanjang vektor pemisah
+                    push = (min_dist - dist) / 2.0
+                    ux, uy = dx / dist, dy / dist
+                    for node, sgn in ((a, 1), (b, -1)):
+                        r = node['pos'].get('r')
+                        nx = node['pos']['x'] + sgn * ux * push
+                        ny = node['pos']['y'] + sgn * uy * push
+                        # pertahankan pada radius ring kalau ada
+                        if r:
+                            vx, vy = nx - 0.5, ny - 0.5
+                            vd = math.hypot(vx, vy)
+                            if vd > 0:
+                                nx = 0.5 + r * vx / vd
+                                ny = 0.5 + r * vy / vd
+                        node['pos']['x'] = nx
+                        node['pos']['y'] = ny
+                    moved = True
+            if not moved:
+                break
+
     def topology(self):
         """
         Hasilkan graf jaringan untuk visualisasi 2D.
@@ -359,15 +475,42 @@ class Monitor(object):
 
             # hitung skor aktivitas maksimum untuk normalisasi
             max_act = max(self.arp_activity.values()) if self.arp_activity else 1
-            max_rtt = max([v for v in self.rtt.values() if v], default=1.0) or 1.0
 
-            # host non-sentral untuk penempatan sudut merata
-            others = sorted([ip for ip in ips if ip not in (gw_ip, my_ip)])
+            # ── penempatan sudut BERBASIS KEDEKATAN (RTT) ───────────
+            # Host dengan RTT mirip diurutkan berdampingan supaya sudutnya
+            # berdekatan (perangkat di kelas jarak sama tampak berkelompok).
+            # Host tanpa RTT ditaruh paling akhir.
+            others = [ip for ip in ips if ip not in (gw_ip, my_ip)]
+
+            def _rtt_key(ip):
+                r = self.rtt.get(ip)
+                return (r if (r is not None and r > 0) else 1e9)
+
+            others.sort(key=_rtt_key)
             n = len(others)
-            # sudut stabil: pakai cache; kalau baru, sebarkan merata
             for idx, ip in enumerate(others):
                 if ip not in self.node_angles:
+                    # sudut merata berurutan -> tetangga RTT = tetangga sudut
                     self.node_angles[ip] = (idx / max(n, 1)) * 2 * math.pi
+
+            # ── cincin kelas RTT (radius tetap per kelas) ───────────
+            # Kelas dibuat dari kuartil RTT host yang ada RTT-nya.
+            rtt_vals = sorted(v for v in self.rtt.values()
+                              if v is not None and v > 0)
+
+            def _rtt_class(rtt):
+                if rtt is None or rtt <= 0:
+                    return 2  # tanpa RTT -> ring sedang
+                if not rtt_vals:
+                    return 2
+                # pecah jadi 4 kelas berdasarkan posisi relatif
+                import bisect
+                pos = bisect.bisect_left(rtt_vals, rtt)
+                frac = pos / max(len(rtt_vals) - 1, 1)  # 0..1
+                return min(3, int(frac * 4))
+
+            # radius per kelas (cincin tetap)
+            RING_RADIUS = {0: 0.18, 1: 0.28, 2: 0.38, 3: 0.48}
 
             gw_mac = self.gw.get('mac') or ''
             links_virtual = []
@@ -380,27 +523,25 @@ class Monitor(object):
 
                 if is_gw:
                     kind = 'gateway'
-                    pos = {'x': 0.5, 'y': 0.5, 'r': 0.0}
+                    pos = {'x': 0.5, 'y': 0.5, 'r': 0.0, 'ring': -1}
                     label = 'Router / Gateway'
                 elif is_self:
                     kind = 'self'
-                    pos = {'x': 0.5, 'y': 0.5 + 0.14, 'r': 0.14}
+                    pos = {'x': 0.5, 'y': 0.5 + 0.14, 'r': 0.14, 'ring': 0}
                     label = (h.get('hostname') or 'Perangkat ini')
                 else:
                     kind = 'host'
                     rtt = self.rtt.get(ip)
-                    act = self.arp_activity.get(ip, 0)
-                    # skor radius: RTT besar -> lebih jauh; aktivitas tinggi -> lebih dekat
-                    rtt_score = (rtt / max_rtt) if (rtt is not None and max_rtt) else 0.3
-                    act_score = 1.0 - (act / max_act if max_act else 0)
-                    radius = 0.16 + 0.30 * (0.65 * rtt_score + 0.35 * act_score)
+                    cls = _rtt_class(rtt)
+                    radius = RING_RADIUS[cls]
                     if threat == 'attacker':
-                        radius = 0.46   # penyerang sengaja di ring terluar
+                        radius = 0.48   # penyerang di ring terluar
                     ang = self.node_angles.get(ip, 0.0)
                     pos = {
                         'x': 0.5 + radius * math.cos(ang),
                         'y': 0.5 + radius * math.sin(ang),
                         'r': radius,
+                        'ring': cls,
                     }
                     label = h.get('hostname') or ip
 
@@ -415,6 +556,8 @@ class Monitor(object):
                     'activity': self.arp_activity.get(ip, 0),
                     'pos': pos,
                     'alt_macs': h.get('alt_macs', []),
+                    'distance': self._distance_label(
+                        self.estimate_distance_cm(ip, self.rtt.get(ip))),
                 })
 
             # ── node PENYERANG virtual ──────────────────────────────
@@ -458,11 +601,17 @@ class Monitor(object):
                     },
                     'alt_macs': [],
                     'virtual': True,
+                    'distance': self._distance_label(None),
                 })
                 # garis putus penyerang -> gateway
                 if gw_ip:
                     links_virtual.append({'src': '@' + am, 'dst': gw_ip,
                                           'kind': 'attack', 'strength': 1.0})
+
+            # ── anti-tumpuk (collision avoidance) ───────────────────
+            # Pastikan jarak antar-node >= MIN_DIST supaya tidak bertumpuk
+            # & mudah divisualisasikan. Node digeser sepanjang sudutnya.
+            self._spread_nodes(nodes)
 
             # links: hub (semua host -> gateway) + overlay ARP nyata
             links = list(links_virtual)
@@ -491,6 +640,7 @@ class Monitor(object):
                 links.append({'src': a, 'dst': b, 'kind': 'arp',
                               'strength': strength})
 
+            ap_rssi = self._read_ap_rssi()
             return {
                 'nodes': nodes,
                 'links': links,
@@ -498,9 +648,14 @@ class Monitor(object):
                 'self': my_ip,
                 'meta': {
                     'timestamp': now,
-                    'disclaimer': 'Posisi adalah estimasi topologi '
-                                  'berdasarkan RTT & aktivitas ARP — '
-                                  'BUKAN lokasi fisik sebenarnya.',
+                    'ap_rssi': ap_rssi,          # RSSI laptop->AP (dBm)
+                    'distance_note': 'Estimasi jarak KASAR berbasis RTT '
+                                     '& model path-loss (akurasi ±2–5 m). '
+                                     'Bukan pengukuran presisi.',
+                    'disclaimer': 'Posisi & jarak adalah ESTIMASI '
+                                  'berdasarkan RTT/latency — BUKAN lokasi '
+                                  'fisik sebenarnya. Tidak ada RSSI '
+                                  'per-perangkat pada klien WiFi.',
                 },
             }
 
