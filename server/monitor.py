@@ -423,50 +423,112 @@ class Monitor(object):
             text = '~{:.1f} m'.format(cm / 100.0)
         return {'cm': round(cm, 1), 'mm': mm, 'text': text}
 
-    def _spread_nodes(self, nodes, min_dist=0.085, iterations=40):
+    def _spread_nodes(self, nodes, min_dist=0.11, iterations=120):
         """
-        Anti-tumpuk: geser node agar jarak antar-node >= min_dist.
+        Anti-tumpuk: pastikan jarak antar-node >= min_dist, dengan
+        menggeser node secara BEBAS (radial + sudut), bukan hanya
+        sepanjang busur. Node yang berdesakan didorong saling menjauh.
 
-        Node digeser sepanjang busur (sudut kecil) pada ring-nya; gateway
-        dan perangkat sendiri tidak digeser (posisi acuan).
+        Gateway & perangkat sendiri tetap sebagai acuan (tidak digeser),
+        kecuali kalau dia sendiri terlalu dekat dengan node lain.
+
+        Node punya "pinned_radius" (radius asli dari RTT) supaya saat
+        sudah cukup renggang, ia kembali ke posisi proporsionalnya.
         """
         import math
-        movable = [n for n in nodes
-                   if n['kind'] not in ('gateway', 'self')]
-        for _ in range(iterations):
+        if not nodes:
+            return
+
+        # simpan radius & sudut asli (basis proporsional RTT)
+        for n in nodes:
+            p = n['pos']
+            vx, vy = p['x'] - 0.5, p['y'] - 0.5
+            p['_base_r'] = math.hypot(vx, vy)
+            p['_base_a'] = math.atan2(vy, vx) if (vx or vy) else 0.0
+            # posisi kerja
+            p['_x'] = p['x']
+            p['_y'] = p['y']
+
+        fixed_kinds = ('gateway',)
+        for it in range(iterations):
             moved = False
-            for i in range(len(movable)):
-                for j in range(i + 1, len(movable)):
-                    a, b = movable[i], movable[j]
-                    dx = a['pos']['x'] - b['pos']['x']
-                    dy = a['pos']['y'] - b['pos']['y']
+            for i in range(len(nodes)):
+                for j in range(i + 1, len(nodes)):
+                    a, b = nodes[i], nodes[j]
+                    pa, pb = a['pos'], b['pos']
+                    dx = pa['_x'] - pb['_x']
+                    dy = pa['_y'] - pb['_y']
                     dist = math.hypot(dx, dy)
-                    if dist >= min_dist or dist == 0:
-                        if dist == 0:
-                            # tepat bertumpuk: beri pergeseran acak-deterministik
-                            a['pos']['x'] += 0.001
-                            b['pos']['x'] -= 0.001
-                            moved = True
+                    if dist >= min_dist:
                         continue
-                    # geser sedikit berlawanan arah sepanjang vektor pemisah
+                    if dist < 1e-6:
+                        # persis bertumpuk -> pisahkan dengan sudut tetap
+                        dx, dy, dist = 0.001, 0.001, 0.001414
                     push = (min_dist - dist) / 2.0
                     ux, uy = dx / dist, dy / dist
                     for node, sgn in ((a, 1), (b, -1)):
-                        r = node['pos'].get('r')
-                        nx = node['pos']['x'] + sgn * ux * push
-                        ny = node['pos']['y'] + sgn * uy * push
-                        # pertahankan pada radius ring kalau ada
-                        if r:
-                            vx, vy = nx - 0.5, ny - 0.5
-                            vd = math.hypot(vx, vy)
-                            if vd > 0:
-                                nx = 0.5 + r * vx / vd
-                                ny = 0.5 + r * vy / vd
-                        node['pos']['x'] = nx
-                        node['pos']['y'] = ny
+                        # gateway tetap di pusat; hanya dorong yang lain
+                        if node['kind'] in fixed_kinds:
+                            continue
+                        p = node['pos']
+                        p['_x'] += sgn * ux * push
+                        p['_y'] += sgn * uy * push
                     moved = True
             if not moved:
                 break
+
+        # tulis kembali hasil spread; TIDAK menarik kembali ke radius
+        # asli kalau itu akan membuat node bertumpuk lagi.
+        for n in nodes:
+            p = n['pos']
+            if n['kind'] == 'gateway':
+                p['x'], p['y'] = 0.5, 0.5
+                p['r'] = 0.0
+                for k in ('_x', '_y', '_base_r', '_base_a'):
+                    p.pop(k, None)
+                continue
+            vx, vy = p['_x'] - 0.5, p['_y'] - 0.5
+            cur_a = math.atan2(vy, vx) if (vx or vy) else p['_base_a']
+            r = math.hypot(vx, vy)
+            r = max(0.10, min(0.49, r))
+            p['x'] = 0.5 + r * math.cos(cur_a)
+            p['y'] = 0.5 + r * math.sin(cur_a)
+            p['r'] = r
+            for k in ('_x', '_y', '_base_r', '_base_a'):
+                p.pop(k, None)
+
+        # verifikasi akhir; kalau masih ada yang < min_dist, ulangi pass
+        # pemisahan sederhana tanpa blend
+        for _ in range(60):
+            worst = None
+            for i in range(len(nodes)):
+                if nodes[i]['kind'] == 'gateway':
+                    continue
+                for j in range(i + 1, len(nodes)):
+                    a, b = nodes[i], nodes[j]
+                    dx = a['pos']['x'] - b['pos']['x']
+                    dy = a['pos']['y'] - b['pos']['y']
+                    d = math.hypot(dx, dy)
+                    if d < min_dist:
+                        worst = (a, b, d)
+                        break
+                if worst:
+                    break
+            if not worst:
+                break
+            a, b, d = worst
+            if d < 1e-6:
+                dx, dy, d = 0.001, 0.001, 0.001414
+            else:
+                dx = a['pos']['x'] - b['pos']['x']
+                dy = a['pos']['y'] - b['pos']['y']
+            push = (min_dist - d) / 2.0
+            ux, uy = dx / d, dy / d
+            for node, sgn in ((a, 1), (b, -1)):
+                if node['kind'] == 'gateway':
+                    continue
+                node['pos']['x'] += sgn * ux * push
+                node['pos']['y'] += sgn * uy * push
 
     def topology(self):
         """

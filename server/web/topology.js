@@ -23,6 +23,7 @@ let dragging = false;
 let lastMouse = { x: 0, y: 0 };
 let t0 = performance.now();
 let animStart = 0;             // waktu mulai transisi posisi
+let placedCache = [];          // posisi layar final (untuk hitTest)
 
 const COLORS = {
   gateway: '#4a9eff',
@@ -156,7 +157,7 @@ function draw() {
   }
   // repulsion pass: pastikan tidak bertumpuk di layar (fallback halus)
   const MIN_GAP = 46;
-  for (let it = 0; it < 6; it++) {
+  for (let it = 0; it < 12; it++) {
     let moved = false;
     for (let i = 0; i < placed.length; i++) {
       for (let j = i + 1; j < placed.length; j++) {
@@ -164,7 +165,7 @@ function draw() {
         const dx = a.x - b.x, dy = a.y - b.y;
         let d = Math.hypot(dx, dy);
         if (d === 0) { a.x += 0.5; b.x -= 0.5; moved = true; continue; }
-        const need = a.r + b.r + 14;   // jarak minimum
+        const need = a.r + b.r + 20;   // jarak minimum antar pusat
         if (d < need) {
           const push = (need - d) / 2;
           const ux = dx / d, uy = dy / d;
@@ -176,6 +177,9 @@ function draw() {
     }
     if (!moved) break;
   }
+  // simpan posisi final layar supaya hitTest (klik) memakai koordinat
+  // yang SAMA dengan yang digambar
+  placedCache = placed;
 
   // gambar node
   for (const pl of placed) {
@@ -183,6 +187,15 @@ function draw() {
     const baseR = nodeRadius(n);
     const isAtk = n.threat === 'attacker';
     const r = isAtk ? baseR + 4 * pulse : baseR;
+
+    // highlight saat hover / terpilih (agar jelas node mana yang diklik)
+    if (hoverNode && hoverNode.ip === n.ip) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 6, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
     if (isAtk) {
       const halo = ctx.createRadialGradient(p.x, p.y, r * 0.4, p.x, p.y, r * 2.4);
@@ -261,10 +274,9 @@ function loop() { draw(); requestAnimationFrame(loop); }
 // ── interaksi ──────────────────────────────────────────────────────
 function hitTest(mx, my) {
   let best = null, bestD = 1e9;
-  for (const n of DATA.nodes) {
-    const p = toScreen(animPos(n));
-    const d = Math.hypot(p.x - mx, p.y - my);
-    if (d < nodeRadius(n) + 6 && d < bestD) { best = n; bestD = d; }
+  for (const item of placedCache) {
+    const d = Math.hypot(item.x - mx, item.y - my);
+    if (d < item.r + 8 && d < bestD) { best = item.n; bestD = d; }
   }
   return best;
 }
