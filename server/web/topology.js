@@ -22,6 +22,7 @@ let selectedIp = null;
 let dragging = false;
 let lastMouse = { x: 0, y: 0 };
 let t0 = performance.now();
+let animStart = 0;             // waktu mulai transisi posisi
 
 const COLORS = {
   gateway: '#4a9eff',
@@ -67,6 +68,19 @@ function nodeRadius(n) {
   return 18;
 }
 
+// posisi node yang sudah diinterpolasi (animasi halus antar update)
+function animPos(n) {
+  const p = n.pos;
+  if (n._fromX == null) return p;
+  const t = Math.min(1, (performance.now() - animStart) / 600);
+  const e = t * (2 - t);   // easeOutQuad
+  return {
+    x: n._fromX + (p.x - n._fromX) * e,
+    y: n._fromY + (p.y - n._fromY) * e,
+    r: p.r,
+  };
+}
+
 // ── render ─────────────────────────────────────────────────────────
 function draw() {
   const { w, h } = cssSize();
@@ -108,7 +122,7 @@ function draw() {
     const a = nodeByIp[l.src], b = nodeByIp[l.dst];
     if (!a || !b) continue;
     if (l.kind === 'arp' && !toggleArp.checked) continue;
-    const pa = toScreen(a.pos), pb = toScreen(b.pos);
+    const pa = toScreen(animPos(a)), pb = toScreen(animPos(b));
     const attackerLink = (a.threat === 'attacker' || b.threat === 'attacker');
 
     ctx.beginPath();
@@ -134,7 +148,7 @@ function draw() {
   // nodes — hitung posisi layar dulu (termasuk repulsion halus)
   const placed = [];
   for (const n of DATA.nodes) {
-    const p = toScreen(n.pos);
+    const p = toScreen(animPos(n));
     placed.push({ n, x: p.x, y: p.y, r: nodeRadius(n) });
   }
   // repulsion pass: pastikan tidak bertumpuk di layar (fallback halus)
@@ -234,7 +248,7 @@ function loop() { draw(); requestAnimationFrame(loop); }
 function hitTest(mx, my) {
   let best = null, bestD = 1e9;
   for (const n of DATA.nodes) {
-    const p = toScreen(n.pos);
+    const p = toScreen(animPos(n));
     const d = Math.hypot(p.x - mx, p.y - my);
     if (d < nodeRadius(n) + 6 && d < bestD) { best = n; bestD = d; }
   }
@@ -350,28 +364,55 @@ window.addWhitelist = async function (mac, ip) {
   }
 };
 
-// ── polling ────────────────────────────────────────────────────────
+// ── polling real-time ──────────────────────────────────────────────
+let inFlight = false;
+let lastOk = 0;
+let okCount = 0;
+
 async function refresh() {
+  if (inFlight) return;          // jangan menumpuk kalau request lambat
+  inFlight = true;
   try {
-    const r = await fetch('/topology');
+    const r = await fetch('/topology', { cache: 'no-store' });
     const j = await r.json();
     if (j.status === 'success' && j.topology) {
+      const prevPos = {};
+      for (const n of DATA.nodes) prevPos[n.ip] = { ...n.pos };
       DATA = j.topology;
+      // tandai posisi lama untuk animasi transisi halus
+      for (const n of DATA.nodes) {
+        const p = prevPos[n.ip];
+        if (p) { n._fromX = p.x; n._fromY = p.y; }
+      }
+      animStart = performance.now();
+      lastOk = performance.now();
+      okCount++;
       const threats = DATA.nodes.filter(n => n.threat === 'attacker').length;
       const susp = DATA.nodes.filter(n => n.threat === 'suspicious').length;
       const rssi = DATA.meta && DATA.meta.ap_rssi != null
         ? DATA.meta.ap_rssi + ' dBm' : '-';
-      statsEl.textContent =
+      const now = new Date(lastOk);
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const ss = String(now.getSeconds()).padStart(2, '0');
+      statsEl.innerHTML =
+        `<span style="color:#46c46a">● LIVE</span>  ` +
         `Host: ${DATA.nodes.length}  |  Penyerang: ${threats}  |  ` +
         `Mencurigakan: ${susp}  |  Link: ${DATA.links.length}  |  ` +
-        `Sinyal ke AP: ${rssi}`;
+        `Sinyal ke AP: ${rssi}  |  Update: ${hh}:${mm}:${ss}`;
     }
   } catch (e) {
-    statsEl.textContent = 'gagal memuat data';
+    const ago = Math.round((performance.now() - lastOk) / 1000);
+    statsEl.innerHTML =
+      `<span style="color:#e5484d">● TERPUTUS</span>  ` +
+      `gagal memuat data (${ago}s)`;
+  } finally {
+    inFlight = false;
   }
 }
 
 resize();
 refresh();
-setInterval(refresh, 2000);
+// polling cepat (1 detik) — cukup real-time, ringan
+setInterval(refresh, 1000);
 loop();
