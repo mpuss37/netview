@@ -106,13 +106,21 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         v = QVBoxLayout(central)
 
-        # panel status atas
-        top = QHBoxLayout()
+        # panel status atas (2 baris, rapi seperti dashboard)
+        top = QVBoxLayout()
+        top.setContentsMargins(6, 6, 6, 2)
+        top.setSpacing(2)
+
         self.lbl_status = QLabel('Memuat...')
+        self.lbl_status.setTextFormat(Qt.RichText)
+        self.lbl_status.setWordWrap(True)
         top.addWidget(self.lbl_status)
-        top.addStretch(1)
+
         self.lbl_threats = QLabel('')
+        self.lbl_threats.setTextFormat(Qt.RichText)
+        self.lbl_threats.setWordWrap(True)
         top.addWidget(self.lbl_threats)
+
         v.addLayout(top)
 
         # tabs
@@ -248,25 +256,52 @@ class MainWindow(QMainWindow):
         gw = ov.get('gateway', {})
         my = ov.get('my', {})
 
-        # status bar atas
-        state = 'ON' if mon.get('running') else 'OFF'
+        # ── baris 1: status monitoring & jaringan ──
+        running = bool(mon.get('running'))
+        mon_txt = ('<span style="color:#46c46a;font-weight:600">ON</span>'
+                   if running else
+                   '<span style="color:#e5484d;font-weight:600">OFF</span>')
         self.lbl_status.setText(
-            'Monitoring: {}  |  Host: {}  |  ARP: {}  |  Scan: {}  |  '
-            'GW: {} ({})  |  Ini: {}'.format(
-                state, mon.get('hosts', 0), mon.get('arp_count', 0),
-                mon.get('scan_count', 0), gw.get('ip', '?'), gw.get('mac', '?'),
+            'Monitoring: {} &nbsp;|&nbsp; '
+            'Host: <b>{}</b> &nbsp;|&nbsp; '
+            'ARP: <b>{}</b> &nbsp;|&nbsp; '
+            'Scan: <b>{}</b> &nbsp;|&nbsp; '
+            'GW: <b>{}</b> ({}) &nbsp;|&nbsp; '
+            'This device: <b>{}</b>'.format(
+                mon_txt,
+                mon.get('hosts', 0),
+                mon.get('arp_count', 0),
+                mon.get('scan_count', 0),
+                gw.get('ip', '?'), gw.get('mac', '?'),
                 my.get('ip', '?')))
-        self.act_monitor.setChecked(bool(mon.get('running')))
+        self.act_monitor.setChecked(running)
         self.act_protect.setChecked(bool(df.get('enabled')))
         self.act_auto.setChecked(bool(df.get('auto_defense')))
         self.act_notify.setChecked(bool(self._notify))
 
+        # ── baris 2: ancaman & proteksi ──
         n_threat = ov.get('threats', 0)
         n_crit = ov.get('critical_alerts', 0)
         n_block = df.get('blocked_count', 0)
+        prot = bool(df.get('enabled'))
+        auto = bool(df.get('auto_defense'))
+
+        def _color(v, warn_at=1):
+            if v >= warn_at:
+                return '#e5484d'
+            return '#46c46a'
+
         self.lbl_threats.setText(
-            'Ancaman: {}  |  Alert kritis: {}  |  Diblokir: {}'.format(
-                n_threat, n_crit, n_block))
+            'Threats: <b style="color:{}">{}</b> &nbsp;|&nbsp; '
+            'Critical alert: <b style="color:{}">{}</b> &nbsp;|&nbsp; '
+            'Blocked: <b>{}</b> &nbsp;|&nbsp; '
+            'Proteksi: <b>{}</b> &nbsp;|&nbsp; '
+            'Auto-defense: <b>{}</b>'.format(
+                _color(n_threat), n_threat,
+                _color(n_crit), n_crit,
+                n_block,
+                ('AKTIF' if prot else 'MATI'),
+                ('AKTIF' if auto else 'MATI')))
 
         self.host_model.set_hosts(data.get('hosts', []))
         alerts = data.get('alerts', [])
