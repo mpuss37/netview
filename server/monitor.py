@@ -590,7 +590,7 @@ class Monitor(object):
                 ang = (idx / max(k, 1)) * 2 * math.pi + math.pi / 4
                 radius = 0.48
                 nodes.append({
-                    'ip': '@' + am,            # id unik (bukan IP asli)
+                    'ip': '@' + am,            # id unik internal (bukan IP)
                     'mac': am,
                     'label': 'PENYERANG',
                     'kind': 'attacker',
@@ -605,6 +605,8 @@ class Monitor(object):
                     },
                     'alt_macs': [],
                     'virtual': True,
+                    'no_ip': True,          # tidak punya IP (MAC palsu)
+                    'display_ip': 'MAC palsu',
                     'distance': self._distance_label(None),
                 })
                 # garis putus penyerang -> gateway

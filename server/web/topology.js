@@ -217,7 +217,13 @@ function draw() {
     }
 
     // label — sembunyikan kalau terlalu dekat dengan label lain
-    const lbl = n.ip + (n.label && n.label !== n.ip ? '  ' + n.label : '');
+    let lbl;
+    if (n.no_ip) {
+      // node penyerang tanpa IP: tampilkan MAC (penanda), bukan id internal
+      lbl = n.mac + '  PENYERANG';
+    } else {
+      lbl = n.ip + (n.label && n.label !== n.ip ? '  ' + n.label : '');
+    }
     ctx.font = '12px system-ui';
     const ly = p.y + r + 4;
     const lw = ctx.measureText(lbl).width;
@@ -272,8 +278,10 @@ canvas.addEventListener('mousemove', (e) => {
     tooltip.style.left = (mx + 14) + 'px';
     tooltip.style.top = (my + 14) + 'px';
     const dist = n.distance && n.distance.text ? n.distance.text : '-';
+    const title = n.no_ip ? `MAC palsu: ${n.mac}` : `${n.ip}`;
     tooltip.innerHTML =
-      `<b>${n.ip}</b><br>MAC: ${n.mac || '-'}<br>` +
+      `<b>${title}</b><br>` +
+      (n.no_ip ? `IP: <i>tidak ada</i><br>` : `MAC: ${n.mac || '-'}<br>`) +
       `Vendor: ${n.vendor || '-'}<br>` +
       `RTT: ${n.rtt != null ? n.rtt + ' ms' : '-'}<br>` +
       `Estimasi jarak: <b>${dist}</b><br>` +
@@ -313,7 +321,8 @@ document.getElementById('btn-reset').addEventListener('click', () => {
 // ── panel detail ───────────────────────────────────────────────────
 function selectNode(n) {
   selectedIp = n.ip;
-  panelTitle.textContent = 'Perangkat ' + n.ip;
+  panelTitle.textContent = n.no_ip
+    ? 'MAC Palsu ' + n.mac : 'Perangkat ' + n.ip;
   const threat = n.threat || '';
   const badgeClass = threat === 'attacker' ? 'attacker'
     : threat === 'suspicious' ? 'suspicious' : 'normal';
@@ -323,6 +332,7 @@ function selectNode(n) {
   let html = `
     <div class="row"><span class="k">Status</span>
       <span class="badge ${badgeClass}">${badgeText}</span></div>
+    <div class="row"><span class="k">IP</span>${n.no_ip ? '<i>tidak ada (MAC palsu)</i>' : n.ip}</div>
     <div class="row"><span class="k">MAC</span>${n.mac || '-'}</div>
     <div class="row"><span class="k">Vendor</span>${n.vendor || '-'}</div>
     <div class="row"><span class="k">RTT</span>${n.rtt != null ? n.rtt + ' ms' : '-'}</div>
@@ -342,7 +352,7 @@ function selectNode(n) {
       ⚠️ Node ini terdeteksi melakukan ARP spoofing. Aktifkan proteksi /
       auto-defense di GUI NetView.</div>`;
   }
-  html += `<button onclick="addWhitelist('${n.mac || ''}','${n.ip}')">Tambah ke whitelist</button>`;
+  html += `<button onclick="addWhitelist('${n.mac || ''}','${n.no_ip ? '' : n.ip}')">Tambah ke whitelist</button>`;
   panelBody.innerHTML = html;
 }
 
