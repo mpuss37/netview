@@ -279,9 +279,15 @@ canvas.addEventListener('mousemove', (e) => {
     tooltip.style.top = (my + 14) + 'px';
     const dist = n.distance && n.distance.text ? n.distance.text : '-';
     const title = n.no_ip ? `MAC palsu: ${n.mac}` : `${n.ip}`;
+    let extra = '';
+    if (n.no_ip) {
+      const cands = (n.ip_candidates || []).join(', ');
+      extra = `<br>IP asli: ${cands ? '<b>' + cands + '</b>' : '<i>belum diketahui</i>'}`;
+    }
     tooltip.innerHTML =
       `<b>${title}</b><br>` +
-      (n.no_ip ? `IP: <i>tidak ada</i><br>` : `MAC: ${n.mac || '-'}<br>`) +
+      (n.no_ip ? `IP: <i>menyamar (tidak ada IP sendiri)</i>` +
+                 `${extra}<br>` : `MAC: ${n.mac || '-'}<br>`) +
       `Vendor: ${n.vendor || '-'}<br>` +
       `RTT: ${n.rtt != null ? n.rtt + ' ms' : '-'}<br>` +
       `Estimasi jarak: <b>${dist}</b><br>` +
@@ -332,7 +338,7 @@ function selectNode(n) {
   let html = `
     <div class="row"><span class="k">Status</span>
       <span class="badge ${badgeClass}">${badgeText}</span></div>
-    <div class="row"><span class="k">IP</span>${n.no_ip ? '<i>tidak ada (MAC palsu)</i>' : n.ip}</div>
+    <div class="row"><span class="k">IP</span>${n.no_ip ? '<i>menyamar (tak punya IP sendiri)</i>' : n.ip}</div>
     <div class="row"><span class="k">MAC</span>${n.mac || '-'}</div>
     <div class="row"><span class="k">Vendor</span>${n.vendor || '-'}</div>
     <div class="row"><span class="k">RTT</span>${n.rtt != null ? n.rtt + ' ms' : '-'}</div>
@@ -344,6 +350,22 @@ function selectNode(n) {
     <div class="row"><span class="k">Peran</span>${n.kind === 'gateway' ? 'Gateway'
       : n.kind === 'self' ? 'Perangkat ini' : n.kind === 'attacker' ? 'Penyerang' : 'Host'}</div>
   `;
+
+  // pelacakan IP asli penyerang
+  if (n.no_ip) {
+    const cands = n.ip_candidates || [];
+    const inner = cands.length
+      ? `<b>${cands.join(', ')}</b>`
+      : '<i>belum diketahui</i>';
+    html += `<div class="row" style="margin-top:10px">
+      <span class="k">IP asli</span>${inner}</div>`;
+    if (n.ip_note) {
+      html += `<div class="row muted" style="font-size:12px">${n.ip_note}</div>`;
+    }
+    if (cands.length) {
+      html += `<button onclick="addWhitelist('${n.mac}','${cands[0]}')">Whitelist MAC+IP asli</button>`;
+    }
+  }
   if (n.alt_macs && n.alt_macs.length) {
     html += `<div class="row"><span class="k">MAC lain</span>${n.alt_macs.join(', ')}</div>`;
   }

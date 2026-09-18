@@ -373,3 +373,52 @@ class Detector(object):
         if self.my_ip:
             res.pop(self.my_ip, None)
         return res
+
+    # ── pelacakan IP asli penyerang ────────────────────────────────
+    def attacker_ip_candidates(self, attacker_mac):
+        """
+        Cari kemungkinan IP ASLI dari sebuah MAC penyerang.
+
+        MAC penyerang tidak punya IP di ARP (dia menyamar pakai IP orang
+        lain). Tapi kita bisa melacak kandidat IP aslinya:
+          1. IP LAIN yang pernah diklaim MAC ini (selain IP korban).
+          2. Jika dia hanya pernah mengaku sebagai korban, catat bahwa
+             IP asli tak diketahui -> pakai OUI/vendor + korelasi.
+        Mengembalikan (list_kandidat, catatan).
+        """
+        mac = (attacker_mac or '').lower()
+        if not mac:
+            return [], 'MAC kosong'
+
+        claims = self.mac_ips.get(mac, {})   # {ip: ts}
+        # IP gateway & IP kita bukan IP "asli" penyerang
+        excluded = set()
+        if self.gateway_ip:
+            excluded.add(self.gateway_ip)
+        if self.my_ip:
+            excluded.add(self.my_ip)
+
+        candidates = [ip for ip in claims.keys() if ip not in excluded]
+        # IP yang pernah diklaim non-gateway dan tidak dipakai MAC lain
+        # di baseline = kandidat IP asli yang cukup kuat
+        strong = []
+        for ip in candidates:
+            base = self.baseline.get(ip)
+            if base is None or base.lower() == mac:
+                strong.append(ip)
+
+        note = ''
+        if strong:
+            note = 'IP asli kemungkinan: {}'.format(', '.join(strong))
+        elif candidates:
+            note = ('MAC ini pernah mengaku IP: {}. Kemungkinan IP asli '
+                    'salah satunya.'.format(', '.join(candidates)))
+        else:
+            note = ('MAC ini belum pernah terlihat dengan IP sendiri — '
+                    'hanya menyamar. IP asli belum diketahui.')
+
+        # informasi tambahan: apakah MAC ini pernah mengaku gateway?
+        if self.gateway_ip in claims:
+            note += ' (pernah menyamar sbg gateway)'
+
+        return (strong or candidates), note

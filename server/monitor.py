@@ -589,6 +589,20 @@ class Monitor(object):
                 # taruh di ring terluar, sudut tersebar
                 ang = (idx / max(k, 1)) * 2 * math.pi + math.pi / 4
                 radius = 0.48
+                # coba lacak IP asli penyerang dari data yang ada
+                try:
+                    cands, note = self.detector.attacker_ip_candidates(am)
+                except Exception:
+                    cands, note = [], ''
+                # fallback: cek ARP table sistem (kalau MAC ini pernah
+                # tercatat dengan IP lain)
+                try:
+                    for _ip, _mac in read_arp_table().items():
+                        if _mac.lower() == am and _ip not in cands:
+                            cands.append(_ip)
+                except Exception:
+                    pass
+
                 nodes.append({
                     'ip': '@' + am,            # id unik internal (bukan IP)
                     'mac': am,
@@ -605,8 +619,10 @@ class Monitor(object):
                     },
                     'alt_macs': [],
                     'virtual': True,
-                    'no_ip': True,          # tidak punya IP (MAC palsu)
+                    'no_ip': True,          # tidak punya IP di ARP (menyamar)
                     'display_ip': 'MAC palsu',
+                    'ip_candidates': cands,   # kandidat IP asli
+                    'ip_note': note,
                     'distance': self._distance_label(None),
                 })
                 # garis putus penyerang -> gateway
