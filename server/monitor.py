@@ -71,6 +71,9 @@ class Monitor(object):
             self.iface = iface or self.gw.get('iface', 'wlan0')
             self.my = get_my(self.iface)
             self.ipv6_net = has_ipv6_route()
+            # reset peta host agar sisa sesi lama (termasuk MAC spoof)
+            # tidak terbawa; akan diisi ulang oleh scan + sniffer
+            self.hosts = {}
             self.detector.set_gateway(self.gw.get('ip'), self.gw.get('mac'),
                                       self.iface)
             self.detector.set_my_ip(self.my.get('ip'))
@@ -162,6 +165,12 @@ class Monitor(object):
         if not ip or not mac:
             return
         mac = mac.lower()
+        # Jangan jadikan MAC kita sendiri sebagai "host" untuk IP lain.
+        # Saat kita melakukan ARP spoof (via NetControl), MAC kita muncul
+        # mengaku sebagai IP korban; itu BUKAN host asli.
+        my_mac = (self.my.get('mac') or '').lower()
+        if my_mac and mac == my_mac and ip != self.my.get('ip'):
+            return
         h = self.hosts.get(ip)
         now = time.time()
         if h is None:
@@ -171,7 +180,8 @@ class Monitor(object):
             }
         else:
             h['last_seen'] = now
-            # catat MAC tambahan (indikasi konflik/spoof)
+            # Only touch last_seen; do NOT overwrite mac. If a different mac
+            # appears for the same IP, record it as alt (spoof indicator).
             if h['mac'] != mac:
                 h.setdefault('alt_macs', [])
                 if mac not in h['alt_macs']:
@@ -210,11 +220,23 @@ class Monitor(object):
                 names = {}
 
             now = time.time()
+            # Sumber OTORITATIF untuk MAC adalah ARP table kernel
+            # (`ip neigh`). Hasil scan/spoof bisa berisi MAC palsu;
+            # jangan sampai menimpa MAC asli yang sudah benar.
+            try:
+                kernel_arp = read_arp_table()
+            except Exception:
+                kernel_arp = {}
+
             with self.lock:
                 for ip, mac in found.items():
                     mac = (mac or '').lower()
                     if not mac:
                         continue
+                    # utamakan MAC dari kernel ARP table kalau ada
+                    kmac = (kernel_arp.get(ip) or '').lower()
+                    if kmac:
+                        mac = kmac
                     h = self.hosts.get(ip)
                     if h is None:
                         self.hosts[ip] = {
@@ -229,6 +251,9 @@ class Monitor(object):
                         if names.get(ip):
                             h['hostname'] = names.get(ip)
                         if h['mac'] != mac:
+                            # JANGAN timpa MAC yang sudah ada; simpan sbg alt.
+                            # Ini mencegah MAC spoof (mis. MAC kita yang
+                            # mengaku IP korban) menimpa MAC asli.
                             h.setdefault('alt_macs', [])
                             if mac not in h['alt_macs']:
                                 h['alt_macs'].append(mac)

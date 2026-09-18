@@ -63,7 +63,9 @@ class HostModel(QAbstractTableModel):
                 COL_HOSTNAME: r.get('hostname', '') or '?',
                 COL_VENDOR: r.get('vendor', '') or ('(MAC acak)' if r.get('random_mac') else ''),
                 COL_IPV6: r.get('ipv6', '') or '',
-                COL_THREAT: {'attacker': 'PENYERANG', 'suspicious': 'curiga'}
+                COL_THREAT: {'attacker': 'PENYERANG',
+                             'suspicious': 'curiga',
+                             'victim': 'KORBAN (diserang)'}
                             .get(threat, 'normal'),
                 COL_ALT: ', '.join(r.get('alt_macs', [])) or '',
             }.get(col, '')
@@ -72,6 +74,8 @@ class HostModel(QAbstractTableModel):
             ok, bad, warn = self._icons()
             if threat == 'attacker':
                 return bad
+            if threat == 'victim':
+                return warn
             if threat == 'suspicious':
                 return warn
             return ok
@@ -79,6 +83,8 @@ class HostModel(QAbstractTableModel):
         if role == Qt.BackgroundRole:
             if threat == 'attacker':
                 return QBrush(QColor(120, 30, 30))
+            if threat == 'victim':
+                return QBrush(QColor(70, 60, 20))
             if threat == 'suspicious':
                 return QBrush(QColor(110, 90, 20))
             return None

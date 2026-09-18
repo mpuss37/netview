@@ -8,6 +8,7 @@
   --host: #9aa2ab;
   --susp: #e0a52a;
   --atk: #e5484d;
+  --vic: #c77dff;
   --line: #343a42;
 }
 
@@ -61,6 +62,7 @@ main {
 .dot.host { background: var(--host); }
 .dot.susp { background: var(--susp); }
 .dot.atk { background: var(--atk); }
+.dot.vic { background: var(--vic); }
 .dashline { color: var(--muted); font-size: 11px; margin-top: 4px; }
 
 #disclaimer {
@@ -88,6 +90,7 @@ main {
 }
 .badge.attacker { background: var(--atk); color: #fff; }
 .badge.suspicious { background: var(--susp); color: #222; }
+.badge.victim { background: var(--vic); color: #1a0f2e; }
 .badge.normal { background: #2f8a4c; color: #fff; }
 .muted { color: var(--muted); }
 #panel-body button {

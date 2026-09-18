@@ -30,6 +30,7 @@ const COLORS = {
   host: '#9aa2ab',
   suspicious: '#e0a52a',
   attacker: '#e5484d',
+  victim: '#c77dff',
 };
 
 function resize() {
@@ -46,10 +47,11 @@ function cssSize() {
   return { w: canvas.clientWidth, h: canvas.clientHeight };
 }
 function nodeColor(n) {
+  if (n.threat === 'attacker') return COLORS.attacker;
+  if (n.threat === 'victim') return COLORS.victim;
+  if (n.threat === 'suspicious') return COLORS.suspicious;
   if (n.kind === 'gateway') return COLORS.gateway;
   if (n.kind === 'self') return COLORS.self;
-  if (n.threat === 'attacker') return COLORS.attacker;
-  if (n.threat === 'suspicious') return COLORS.suspicious;
   return COLORS.host;
 }
 function toScreen(pos) {
@@ -123,7 +125,8 @@ function draw() {
     if (!a || !b) continue;
     if (l.kind === 'arp' && !toggleArp.checked) continue;
     const pa = toScreen(animPos(a)), pb = toScreen(animPos(b));
-    const attackerLink = (a.threat === 'attacker' || b.threat === 'attacker');
+    const attackerLink = (a.threat === 'attacker' && b.threat === 'victim') ||
+                         (b.threat === 'attacker' && a.threat === 'victim');
 
     ctx.beginPath();
     if (attackerLink) {
@@ -204,7 +207,7 @@ function draw() {
       ctx.font = 'bold 13px system-ui';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('GW', p.x, p.y);
-    } else if (n.kind === 'self') {
+    } else if (n.kind === 'self' && !isAtk && n.threat !== 'victim') {
       ctx.fillStyle = '#0b1220';
       ctx.font = 'bold 12px system-ui';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -214,6 +217,11 @@ function draw() {
       ctx.font = 'bold 14px system-ui';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('!', p.x, p.y + 1);
+    } else if (n.threat === 'victim') {
+      ctx.fillStyle = '#1a0f2e';
+      ctx.font = 'bold 13px system-ui';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('◉', p.x, p.y + 1);
     }
 
     // label — sembunyikan kalau terlalu dekat dengan label lain
@@ -331,8 +339,10 @@ function selectNode(n) {
     ? 'MAC Palsu ' + n.mac : 'Perangkat ' + n.ip;
   const threat = n.threat || '';
   const badgeClass = threat === 'attacker' ? 'attacker'
+    : threat === 'victim' ? 'victim'
     : threat === 'suspicious' ? 'suspicious' : 'normal';
   const badgeText = threat === 'attacker' ? 'PENYERANG'
+    : threat === 'victim' ? 'KORBAN (diserang)'
     : threat === 'suspicious' ? 'MENCURIGAKAN' : 'NORMAL';
 
   let html = `
@@ -373,6 +383,11 @@ function selectNode(n) {
     html += `<div class="row muted" style="margin-top:10px">
       ⚠️ Node ini terdeteksi melakukan ARP spoofing. Aktifkan proteksi /
       auto-defense di GUI NetView.</div>`;
+  }
+  if (threat === 'victim') {
+    html += `<div class="row muted" style="margin-top:10px">
+      ℹ️ IP ini adalah <b>KORBAN</b> (diserang), <b>bukan penyerang</b>.
+      Penyerangnya adalah MAC yang mengaku sebagai IP ini.</div>`;
   }
   html += `<button onclick="addWhitelist('${n.mac || ''}','${n.no_ip ? '' : n.ip}')">Tambah ke whitelist</button>`;
   panelBody.innerHTML = html;

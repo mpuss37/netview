@@ -324,39 +324,55 @@ class Detector(object):
     # ── status host (untuk GUI) ────────────────────────────────────
     def threat_map(self):
         """
-        Kembalikan {ip: status} dengan status:
-          'attacker'   -> host (IP) terbukti menyerang
+        Kembalikan {ip: status} untuk tiap IP:
+          'attacker'   -> host (IP) yang TERBUKTI menyerang
           'suspicious' -> perlu dicurigai
+          'victim'     -> host yang JADI SASARAN (diklaim/diserang)
           ''           -> normal
 
-        PENTING: gateway/korban TIDAK boleh ditandai penyerang hanya
-        karena IP-nya dipakai dalam alert. Yang menyerang adalah MAC
-        asing; itu dipetakan lewat IP penyerang (kalau diketahui) atau
-        tidak dipetakan ke IP sama sekali (cukup muncul di tab Alerts).
+        ATURAN KETAT:
+          - `victim_ip` (IP yang diklaim penyerang) SELALU ditandai
+            'victim', TIDAK PERNAH 'attacker'.
+          - 'attacker' HANYA untuk IP yang benar-benar milik MAC
+            penyerang (dari self.mac_ips[attacker_mac]) DAN bukan victim.
+          - gateway & perangkat sendiri tidak pernah 'attacker'.
         """
         res = {}
-        attacker_ips = set()   # IP yang benar-benar milik penyerang
-        victim_ips = set()     # IP korban (gateway/IP yang diklaim)
+        victim_ips = set()
+        attacker_ips = set()
 
+        # 1. kumpulkan semua IP korban dari SEMUA alert dulu
+        #    (supaya tidak ada victim yang keburu ditandai attacker)
         for a in self._alert_log[-500:]:
-            # kumpulkan IP korban dari alert yang menyebut attacker
-            atk = (getattr(a, 'attacker_mac', '') or '')
+            if getattr(a, 'victim_ip', ''):
+                victim_ips.add(a.victim_ip)
+
+        # 2. tentukan IP penyerang = IP milik attacker_mac, bukan victim
+        for a in self._alert_log[-500:]:
+            atk = (getattr(a, 'attacker_mac', '') or '').lower()
             if not atk:
                 continue
-            # IP korban (yg diklaim) jangan ditandai penyerang
-            if a.victim_ip:
-                victim_ips.add(a.victim_ip)
-            # IP penyerang = IP asli si MAC penyerang (kalau kita tahu
-            # dia juga punya IP sendiri). Kita cari dari self.mac_ips.
+            # jangan pernah menandai MAC gateway asli sebagai penyerang
+            if self.gateway_mac and atk == self.gateway_mac.lower():
+                continue
+            # kalau MAC penyerang == MAC perangkat kita (self), maka
+            # perangkat kita inilah penyerangnya -> tandai my_ip.
+            if self.my_ip and self.my_ip in self.mac_ips.get(atk, {}):
+                attacker_ips.add(self.my_ip)
             for ip_assoc in self.mac_ips.get(atk, {}):
-                if ip_assoc not in victim_ips:
-                    attacker_ips.add(ip_assoc)
+                if ip_assoc in victim_ips:
+                    continue
+                if ip_assoc == self.gateway_ip or ip_assoc == self.my_ip:
+                    continue
+                attacker_ips.add(ip_assoc)
 
-        # tandai penyerang
+        # 3. tandai
+        for ip in victim_ips:
+            res[ip] = 'victim'
         for ip in attacker_ips:
             res[ip] = 'attacker'
 
-        # tandai suspect untuk IP yang terkait warning (kecuali korban)
+        # 4. warning -> suspicious (kecuali korban/penyerang/gateway/self)
         for a in self._alert_log[-500:]:
             if a.severity != SEV_WARN:
                 continue
@@ -364,15 +380,27 @@ class Detector(object):
                 ip = ip.strip()
                 if not ip or ip in victim_ips or ip == self.gateway_ip:
                     continue
-                if res.get(ip) != 'attacker':
+                if res.get(ip) not in ('attacker', 'victim'):
                     res[ip] = 'suspicious'
 
-        # gateway & device sendiri selalu dianggap normal
-        if self.gateway_ip:
+        # gateway selalu normal (kecuali memang jadi penyerang -> biarkan
+        # kalau di attacker_ips). Perangkat sendiri BISA jadi penyerang
+        # (mis. saat kita memakai NetControl), jadi jangan dihapus paksa.
+        if self.gateway_ip and res.get(self.gateway_ip) != 'attacker':
             res.pop(self.gateway_ip, None)
-        if self.my_ip:
+        if self.my_ip and res.get(self.my_ip) != 'attacker':
             res.pop(self.my_ip, None)
         return res
+
+    def attacker_ips(self):
+        """Himpunan IP yang ditandai penyerang."""
+        return {ip for ip, st in self.threat_map().items()
+                if st == 'attacker'}
+
+    def victim_ips(self):
+        """Himpunan IP yang ditandai korban (diserang)."""
+        return {ip for ip, st in self.threat_map().items()
+                if st == 'victim'}
 
     # ── pelacakan IP asli penyerang ────────────────────────────────
     def attacker_ip_candidates(self, attacker_mac):
