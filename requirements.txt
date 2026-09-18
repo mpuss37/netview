@@ -1,0 +1,8 @@
+PyQt5
+bottle
+waitress
+scapy
+netifaces
+setproctitle
+requests
+psutil

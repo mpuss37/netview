@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+
+name="netviewd"
+description="NetView daemon - network monitoring & ARP spoofing detection"
+
+command="/usr/bin/python3"
+command_args="/opt/netview/server/server.py"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/netview/netviewd.out"
+error_log="/var/log/netview/netviewd.err"
+
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=0
+
+depend() {
+    need net
+    after net
+}
+
+start_pre() {
+    checkpath -d -m 0755 /var/log/netview
+    checkpath -d -m 0755 /run
+    if [ -f "$pidfile" ]; then
+        kill $(cat "$pidfile" 2>/dev/null) 2>/dev/null
+        sleep 0.5
+        rm -f "$pidfile"
+    fi
+    rm -f /run/netview-server.lock
+}

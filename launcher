@@ -1,0 +1,59 @@
+#!/bin/bash
+# ============================================================
+#  NetView launcher
+#  Otomatis: cek daemon -> start kalau perlu -> buka GUI (PyQt5)
+#  Pakai:  sudo netview
+# ============================================================
+
+SRC_DIR="/home/mpuss/test/netview"
+DAEMON="$SRC_DIR/server/server.py"
+LOG="/var/log/netview/netviewd.out"
+PORT=8015
+
+REAL_USER="${SUDO_USER:-$USER}"
+if [ "$REAL_USER" = "root" ] || [ -z "$REAL_USER" ]; then
+    REAL_USER=$(who 2>/dev/null | grep -E '\(:[0-9]' | awk '{print $1}' | head -1)
+    [ -z "$REAL_USER" ] && REAL_USER=$(ls /home 2>/dev/null | head -1)
+fi
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+[ -z "$REAL_HOME" ] && REAL_HOME="/home/$REAL_USER"
+
+if [ -z "$DISPLAY" ]; then
+    for d in :0 :1 :2; do
+        [ -e "/tmp/.X11-unix/X${d#:}" ] && DISPLAY="$d" && break
+    done
+fi
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-$REAL_HOME/.Xauthority}"
+
+PY=python3
+mkdir -p /var/log/netview 2>/dev/null
+
+daemon_up() {
+    curl -s -m 2 http://127.0.0.1:$PORT/status >/dev/null 2>&1
+}
+
+if daemon_up; then
+    echo "[+] Daemon NetView sudah jalan (port $PORT)."
+else
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "[!] Butuh root. Jalankan:  sudo netview"
+        exit 1
+    fi
+    echo "[*] Menjalankan daemon NetView (port $PORT) ..."
+    cd "$SRC_DIR/server" || exit 1
+    setsid nohup $PY "$DAEMON" > "$LOG" 2>&1 < /dev/null &
+    for i in $(seq 1 24); do
+        daemon_up && break
+        sleep 0.5
+    done
+    if ! daemon_up; then
+        echo "[!] Daemon gagal start. Cek: $LOG"
+        exit 1
+    fi
+    echo "[+] Daemon siap."
+fi
+
+echo "[*] Membuka GUI NetView ..."
+cd "$SRC_DIR" || exit 1
+exec $PY -m netview.app
