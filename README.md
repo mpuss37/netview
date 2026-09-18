@@ -41,8 +41,26 @@ Alert disimpan, dapat difilter, dan diekspor (JSON).
 - **Tab Alerts** — daftar kejadian (waktu, tingkat, jenis, keterangan)
 - **Tab Live ARP** — log ARP real-time
 - Toolbar: Refresh, Scan, Monitor ON/OFF, Proteksi, Auto-Defense,
-  **Notifikasi desktop (toggle)**, Pengaturan, Clear Alerts, Export, Tema, Exit
+  **Notifikasi desktop (toggle)**, Pengaturan, Clear Alerts, Export,
+  **Topology View**, Tema, Exit
 - Whitelist MAC/IP (abaikan dari deteksi)
+
+### Topology View (browser)
+Visualisasi graf jaringan 2D **real-time** di browser (`http://127.0.0.1:8015/tv`):
+- **Router/gateway** di pusat, host mengelilingi (radial).
+- Warna node: router (biru), perangkat ini (hijau), normal (abu),
+  mencurigakan (oranye), **penyerang (merah + berdenyut)**.
+- Garis: hub ke gateway + overlay komunikasi ARP nyata.
+- **Garis putus merah berdenyut** dari penyerang ke gateway (indikasi MITM).
+- Panel samping kanan: info host + tombol whitelist.
+- Hover tooltip, zoom (scroll), pan (drag), toggle garis/cincin.
+
+> ⚠️ **Penting:** posisi node adalah **estimasi topologi** berdasarkan **RTT** &
+> aktivitas ARP — **BUKAN lokasi fisik** sebenarnya. ARP tidak membawa informasi
+> lokasi; ini bukan GPS. Label ini juga ditampilkan di UI.
+
+Buka dari browser: `http://127.0.0.1:8015/tv`
+Atau klik tombol **Topology View** di toolbar GUI desktop.
 - Tema gelap/terang (tersimpan di `~/.netview/`)
 
 ## Arsitektur
@@ -57,13 +75,18 @@ netview/                 GUI PyQt5
     theme.py             stylesheet gelap/terang
 server/
     server.py            daemon (bottle+waitress, port 8015)
-    monitor.py           sniffer ARP + scanner berkala
+    monitor.py           sniffer ARP + scanner + RTT + topology()
     detector.py          8 aturan deteksi ARP spoof
     defense.py           hardening + auto-defense
     utils.py             scan, ARP table, vendor, hostname
+    web/                 Topology View (browser)
+        index.html
+        style.css
+        topology.js      canvas 2D render + real-time poll
 ```
 
 GUI dan daemon terpisah lewat HTTP API di `127.0.0.1:8015`.
+Topology View diserve sebagai halaman web dari daemon yang sama (`/tv`).
 
 ## Instalasi (sistem ini)
 Sudah terpasang:

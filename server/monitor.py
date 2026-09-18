@@ -12,6 +12,7 @@ Semua pengamatan diteruskan ke Detector. Monitor juga menyimpan:
 """
 import threading
 import time
+import subprocess as sp
 from collections import deque
 
 from scapy.all import ARP, Ether, sniff
@@ -45,6 +46,18 @@ class Monitor(object):
         self.arp_count = 0
         self.last_scan = 0
         self.scan_count = 0
+
+        # ── data Topology View ─────────────────────────────────────
+        # relasi ARP: {ip: {peer_ip: last_seen_ts}} dari src_ip -> dst_ip
+        self.arp_links = {}
+        # RTT ping per host: {ip: rtt_ms}
+        self.rtt = {}
+        # entri aktivitas ARP: {ip: jumlah_paket}
+        self.arp_activity = {}
+        # sudut node stabil (agar tidak lompat-lompat tiap refresh)
+        self.node_angles = {}
+        # graf relasi lama dianggap kedaluwarsa
+        self._LINK_TTL = 60.0
 
         # callback dipanggil tiap ada alert baru (untuk notifikasi/auto-def)
         self.on_alerts = None
@@ -130,6 +143,15 @@ class Monitor(object):
             # perbarui peta host
             with self.lock:
                 self._touch_host(arp.psrc, arp.hwsrc)
+                # catat relasi & aktivitas untuk Topology View
+                s_ip, d_ip = arp.psrc or '', arp.pdst or ''
+                self.arp_activity[s_ip] = self.arp_activity.get(s_ip, 0) + 1
+                if d_ip:
+                    self.arp_activity[d_ip] = self.arp_activity.get(d_ip, 0) + 1
+                    # link dua arah (dari sudut pandang komunikasi ARP)
+                    if s_ip and d_ip and s_ip != d_ip:
+                        self.arp_links.setdefault(s_ip, {})[d_ip] = now
+                        self.arp_links.setdefault(d_ip, {})[s_ip] = now
 
             # evaluasi deteksi (hasil dialirkan via callback)
             self._emit_alerts()
@@ -224,8 +246,44 @@ class Monitor(object):
             self.last_scan = now
             self.scan_count += 1
             logger.info('scan #{}: {} host'.format(self.scan_count, len(found)))
+
+            # ukur RTT per host (untuk estimasi posisi Topology View)
+            self._measure_rtt(list(found.keys()))
         except Exception as e:
             logger.error('scan err: {}'.format(e))
+
+    def _measure_rtt(self, ips):
+        """Ukur RTT (ping) paralel untuk semua host. Gateway & self di-skip."""
+        from concurrent.futures import ThreadPoolExecutor
+        gw_ip = self.gw.get('ip')
+        my_ip = self.my.get('ip')
+        targets = [ip for ip in ips if ip not in (gw_ip, my_ip)]
+
+        def _one(ip):
+            try:
+                p = sp.Popen(['ping', '-c', '1', '-W', '1', ip],
+                             stdout=sp.PIPE, stderr=sp.PIPE)
+                out, _ = p.communicate(timeout=2)
+                text = out.decode('utf-8', 'ignore')
+                for line in text.splitlines():
+                    if 'time=' in line:
+                        val = line.split('time=')[-1].split()[0]
+                        return ip, float(val)
+            except Exception:
+                pass
+            return ip, None
+
+        with self.lock:
+            self.rtt[gw_ip] = 0.5 if gw_ip else None
+            self.rtt[my_ip] = 0.0 if my_ip else None
+
+        if not targets:
+            return
+        with ThreadPoolExecutor(max_workers=min(len(targets), 32)) as pool:
+            for ip, rtt in pool.map(_one, targets):
+                with self.lock:
+                    if rtt is not None:
+                        self.rtt[ip] = rtt
 
     # ── evaluasi & alert ───────────────────────────────────────────
     def _emit_alerts(self):
@@ -267,6 +325,184 @@ class Monitor(object):
         with self.lock:
             items = list(self.arp_live)[-limit:]
         return items[::-1]
+
+    # ── Topology View ──────────────────────────────────────────────
+    def topology(self):
+        """
+        Hasilkan graf jaringan untuk visualisasi 2D.
+
+        PENTING: posisi node adalah ESTIMASI TOPOLOGI berdasarkan RTT &
+        aktivitas ARP — BUKAN lokasi fisik. Dilabeli demikian di UI.
+        """
+        import math
+        with self.lock:
+            threats = self.detector.threat_map()
+            gw_ip = self.gw.get('ip')
+            my_ip = self.my.get('ip')
+            now = time.time()
+
+            # bersihkan link lama (TTL)
+            for ip in list(self.arp_links.keys()):
+                peers = self.arp_links[ip]
+                for p in list(peers.keys()):
+                    if now - peers[p] > self._LINK_TTL:
+                        del peers[p]
+                if not peers:
+                    self.arp_links.pop(ip, None)
+
+            # susun daftar node (host + gateway + self)
+            ips = set(self.hosts.keys())
+            if gw_ip:
+                ips.add(gw_ip)
+            if my_ip:
+                ips.add(my_ip)
+
+            # hitung skor aktivitas maksimum untuk normalisasi
+            max_act = max(self.arp_activity.values()) if self.arp_activity else 1
+            max_rtt = max([v for v in self.rtt.values() if v], default=1.0) or 1.0
+
+            # host non-sentral untuk penempatan sudut merata
+            others = sorted([ip for ip in ips if ip not in (gw_ip, my_ip)])
+            n = len(others)
+            # sudut stabil: pakai cache; kalau baru, sebarkan merata
+            for idx, ip in enumerate(others):
+                if ip not in self.node_angles:
+                    self.node_angles[ip] = (idx / max(n, 1)) * 2 * math.pi
+
+            gw_mac = self.gw.get('mac') or ''
+            links_virtual = []
+            nodes = []
+            for ip in ips:
+                h = self.hosts.get(ip, {})
+                threat = threats.get(ip, '')
+                is_gw = (ip == gw_ip)
+                is_self = (ip == my_ip)
+
+                if is_gw:
+                    kind = 'gateway'
+                    pos = {'x': 0.5, 'y': 0.5, 'r': 0.0}
+                    label = 'Router / Gateway'
+                elif is_self:
+                    kind = 'self'
+                    pos = {'x': 0.5, 'y': 0.5 + 0.14, 'r': 0.14}
+                    label = (h.get('hostname') or 'Perangkat ini')
+                else:
+                    kind = 'host'
+                    rtt = self.rtt.get(ip)
+                    act = self.arp_activity.get(ip, 0)
+                    # skor radius: RTT besar -> lebih jauh; aktivitas tinggi -> lebih dekat
+                    rtt_score = (rtt / max_rtt) if (rtt is not None and max_rtt) else 0.3
+                    act_score = 1.0 - (act / max_act if max_act else 0)
+                    radius = 0.16 + 0.30 * (0.65 * rtt_score + 0.35 * act_score)
+                    if threat == 'attacker':
+                        radius = 0.46   # penyerang sengaja di ring terluar
+                    ang = self.node_angles.get(ip, 0.0)
+                    pos = {
+                        'x': 0.5 + radius * math.cos(ang),
+                        'y': 0.5 + radius * math.sin(ang),
+                        'r': radius,
+                    }
+                    label = h.get('hostname') or ip
+
+                nodes.append({
+                    'ip': ip,
+                    'mac': h.get('mac', ''),
+                    'label': label,
+                    'kind': kind,
+                    'threat': threat,
+                    'vendor': h.get('vendor') or get_vendor(h.get('mac', '')),
+                    'rtt': self.rtt.get(ip),
+                    'activity': self.arp_activity.get(ip, 0),
+                    'pos': pos,
+                    'alt_macs': h.get('alt_macs', []),
+                })
+
+            # ── node PENYERANG virtual ──────────────────────────────
+            # MAC asing yang mengaku gateway/host lain sering TIDAK punya
+            # IP sendiri → tidak muncul sebagai host. Kita tambahkan node
+            # khusus supaya penyerang terlihat di topology.
+            attacker_macs = {}
+            for a in self.detector._alert_log[-300:]:
+                if a.severity != 'critical':
+                    continue
+                am = (getattr(a, 'attacker_mac', '') or '').lower()
+                if not am:
+                    continue
+                # jangan tandai MAC gateway asli
+                if gw_mac and am == gw_mac.lower():
+                    continue
+                attacker_macs[am] = attacker_macs.get(am, 0) + 1
+
+            # apakah MAC penyerang sudah tampil sebagai node (punya IP)?
+            known_macs = set((n.get('mac') or '').lower() for n in nodes)
+            k = len(attacker_macs)
+            for idx, (am, _cnt) in enumerate(sorted(attacker_macs.items())):
+                if am in known_macs:
+                    continue
+                # taruh di ring terluar, sudut tersebar
+                ang = (idx / max(k, 1)) * 2 * math.pi + math.pi / 4
+                radius = 0.48
+                nodes.append({
+                    'ip': '@' + am,            # id unik (bukan IP asli)
+                    'mac': am,
+                    'label': 'PENYERANG',
+                    'kind': 'attacker',
+                    'threat': 'attacker',
+                    'vendor': get_vendor(am),
+                    'rtt': None,
+                    'activity': 0,
+                    'pos': {
+                        'x': 0.5 + radius * math.cos(ang),
+                        'y': 0.5 + radius * math.sin(ang),
+                        'r': radius,
+                    },
+                    'alt_macs': [],
+                    'virtual': True,
+                })
+                # garis putus penyerang -> gateway
+                if gw_ip:
+                    links_virtual.append({'src': '@' + am, 'dst': gw_ip,
+                                          'kind': 'attack', 'strength': 1.0})
+
+            # links: hub (semua host -> gateway) + overlay ARP nyata
+            links = list(links_virtual)
+            if gw_ip:
+                for ip in ips:
+                    if ip != gw_ip:
+                        links.append({'src': ip, 'dst': gw_ip,
+                                      'kind': 'hub', 'strength': 0.35})
+
+            # overlay ARP nyata — HANYA antar host yang dikenal.
+            # Catatan: scan kita sendiri mengirim ARP ke seluruh subnet
+            # (.1..255), jadi banyak "link" palsu ke IP yang tak dikenal.
+            # Batasi hanya pasangan yang KEDUANYA ada di daftar host.
+            pair_count = {}
+            for src, peers in self.arp_links.items():
+                if src not in ips:
+                    continue
+                for dst in peers:
+                    if dst not in ips or dst == src:
+                        continue
+                    a, b = sorted([src, dst])
+                    pair_count[(a, b)] = pair_count.get((a, b), 0) + 1
+            max_pair = max(pair_count.values()) if pair_count else 1
+            for (a, b), cnt in pair_count.items():
+                strength = min(1.0, 0.3 + 0.7 * (cnt / max_pair))
+                links.append({'src': a, 'dst': b, 'kind': 'arp',
+                              'strength': strength})
+
+            return {
+                'nodes': nodes,
+                'links': links,
+                'gateway': gw_ip,
+                'self': my_ip,
+                'meta': {
+                    'timestamp': now,
+                    'disclaimer': 'Posisi adalah estimasi topologi '
+                                  'berdasarkan RTT & aktivitas ARP — '
+                                  'BUKAN lokasi fisik sebenarnya.',
+                },
+            }
 
 
 _monitor = None

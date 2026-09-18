@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetView - Topology View</title>
+<link rel="stylesheet" href="/tv/style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">NetView <span class="sub">Topology View</span></div>
+    <div class="stats" id="stats">memuat…</div>
+    <div class="controls">
+      <label class="chk"><input type="checkbox" id="toggle-arp" checked> Garis ARP nyata</label>
+      <label class="chk"><input type="checkbox" id="toggle-rings" checked> Cincin estimasi</label>
+      <button id="btn-reset">Reset tampilan</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="legend">
+        <div><span class="dot gw"></span> Router / Gateway</div>
+        <div><span class="dot self"></span> Perangkat ini</div>
+        <div><span class="dot host"></span> Host normal</div>
+        <div><span class="dot susp"></span> Mencurigakan</div>
+        <div><span class="dot atk"></span> Penyerang</div>
+        <div class="dashline">▬▬ garis ARP nyata</div>
+      </div>
+      <div id="disclaimer">
+        Posisi adalah <b>estimasi topologi</b> berdasarkan RTT &amp; aktivitas ARP
+        — <b>BUKAN lokasi fisik</b> sebenarnya.
+      </div>
+      <div id="tooltip" class="hidden"></div>
+    </div>
+
+    <aside id="panel">
+      <h3 id="panel-title">Info Perangkat</h3>
+      <div id="panel-body">
+        <p class="muted">Klik sebuah node untuk melihat detail.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/tv/topology.js"></script>
+</body>
+</html>

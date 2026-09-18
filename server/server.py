@@ -11,11 +11,14 @@ import fcntl
 import atexit
 import time
 from setproctitle import setproctitle
-from bottle import route, run, app as _bottle_app, request, response
+from bottle import (route, run, app as _bottle_app, request, response,
+                    static_file, HTTPResponse)
 
 from utils import logger, get_default_gw, get_my
 from monitor import get_monitor
 from defense import get_defense
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 
 # ── single-instance guard ──────────────────────────────────────────
 _LOCK_FILE = '/run/netview-server.lock'
@@ -257,6 +260,25 @@ def whitelist_set():
 @route('/ping')
 def ping():
     return jresp({'status': 'success', 'msg': 'pong'})
+
+
+# ── Topology View (browser) ────────────────────────────────────────
+@route('/topology')
+def topology():
+    """Data graf jaringan untuk Topology View."""
+    return jresp({'status': 'success', 'topology': monitor.topology()})
+
+
+@route('/tv')
+def tv_index():
+    """Halaman Topology View (browser)."""
+    return static_file('index.html', root=WEB_DIR)
+
+
+@route('/tv/<filename:path>')
+def tv_static(filename):
+    """Aset statis Topology View (css/js)."""
+    return static_file(filename, root=WEB_DIR)
 
 
 # ── shutdown bersih ────────────────────────────────────────────────

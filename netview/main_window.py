@@ -191,6 +191,10 @@ class MainWindow(QMainWindow):
         self.act_export = act(QStyle.SP_DialogSaveButton, 'Export log (JSON)',
                               self._on_export)
         tb.addSeparator()
+        self.act_topology = act(QStyle.SP_ComputerIcon,
+                                'Buka Topology View (browser)',
+                                self._on_open_topology)
+        tb.addSeparator()
         self.act_theme = act(QStyle.SP_DesktopIcon, 'Toggle tema', self._toggle_theme)
         self.act_exit = act(QStyle.SP_DialogCloseButton, 'Exit', self.close)
 
@@ -424,6 +428,24 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage('Log disimpan: {}'.format(path))
             except Exception as e:
                 QMessageBox.warning(self, 'Gagal menyimpan', str(e))
+
+    # ── Topology View (browser) ────────────────────────────────────
+    def _on_open_topology(self):
+        url = 'http://127.0.0.1:8015/tv'
+        try:
+            from PyQt5.QtGui import QDesktopServices
+            from PyQt5.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(url))
+            self.statusBar().showMessage('Membuka Topology View: {}'.format(url))
+        except Exception:
+            # fallback: buka via xdg-open
+            try:
+                import subprocess as sp
+                sp.Popen(['xdg-open', url])
+            except Exception as e:
+                QMessageBox.information(
+                    self, 'Topology View',
+                    'Buka di browser: {}\n({})'.format(url, e))
 
     # ── detail ─────────────────────────────────────────────────────
     def _on_host_detail(self):
