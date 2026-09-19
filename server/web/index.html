@@ -11,6 +11,12 @@
     <div class="brand">NetView <span class="sub">Topology View</span></div>
     <div class="stats" id="stats">memuat…</div>
     <div class="controls">
+      <label class="chk">Layout:
+        <select id="mode-select">
+          <option value="radial">RTT (proporsional latency)</option>
+          <option value="cluster">Clustering (kedekatan ARP+RTT)</option>
+        </select>
+      </label>
       <label class="chk"><input type="checkbox" id="toggle-arp" checked> Garis ARP nyata</label>
       <label class="chk"><input type="checkbox" id="toggle-rings" checked> Cincin estimasi</label>
       <button id="btn-reset">Reset tampilan</button>

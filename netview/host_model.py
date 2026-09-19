@@ -1,11 +1,10 @@
 """
 Model tabel host NetView.
 
-Kolom: [Status-icon, IP, MAC, Hostname, Vendor, IPv6, Ancaman, AltMAC]
+Kolom: [Status, IP, MAC, Hostname, Vendor, IPv6, Ancaman, AltMAC]
 """
 from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt5.QtGui import QColor, QBrush
-from PyQt5.QtWidgets import QApplication, QStyle
 
 COL_ICON = 0
 COL_IP = 1
@@ -16,7 +15,7 @@ COL_IPV6 = 5
 COL_THREAT = 6
 COL_ALT = 7
 
-HEADERS = ['', 'IP Address', 'MAC Address', 'Hostname', 'Vendor', 'IPv6',
+HEADERS = ['Status', 'IP Address', 'MAC Address', 'Hostname', 'Vendor', 'IPv6',
            'Ancaman', 'MAC lain']
 
 
@@ -24,17 +23,6 @@ class HostModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._rows = []
-        self._ok_icon = None
-        self._bad_icon = None
-        self._warn_icon = None
-
-    def _icons(self):
-        if self._ok_icon is None:
-            st = QApplication.style()
-            self._ok_icon = st.standardIcon(QStyle.SP_DialogApplyButton)
-            self._bad_icon = st.standardIcon(QStyle.SP_MessageBoxCritical)
-            self._warn_icon = st.standardIcon(QStyle.SP_MessageBoxWarning)
-        return self._ok_icon, self._bad_icon, self._warn_icon
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self._rows)
@@ -56,7 +44,9 @@ class HostModel(QAbstractTableModel):
 
         if role == Qt.DisplayRole:
             return {
-                COL_ICON: '',
+                COL_ICON: {'attacker': 'BAD',
+                           'suspicious': 'WARN',
+                           'victim': 'WARN'}.get(threat, 'OK'),
                 COL_IP: r.get('ip', '') + (' (GW)' if r.get('is_gateway') else
                                            (' (INI)' if r.get('is_self') else '')),
                 COL_MAC: r.get('mac', ''),
@@ -69,16 +59,6 @@ class HostModel(QAbstractTableModel):
                             .get(threat, 'normal'),
                 COL_ALT: ', '.join(r.get('alt_macs', [])) or '',
             }.get(col, '')
-
-        if role == Qt.DecorationRole and col == COL_ICON:
-            ok, bad, warn = self._icons()
-            if threat == 'attacker':
-                return bad
-            if threat == 'victim':
-                return warn
-            if threat == 'suspicious':
-                return warn
-            return ok
 
         if role == Qt.BackgroundRole:
             if threat == 'attacker':

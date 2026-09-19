@@ -52,12 +52,18 @@ class Monitor(object):
         self.arp_links = {}
         # RTT ping per host: {ip: rtt_ms}
         self.rtt = {}
+        # riwayat RTT untuk smoothing (median)
+        self.rtt_hist = {}
         # entri aktivitas ARP: {ip: jumlah_paket}
         self.arp_activity = {}
         # sudut node stabil (agar tidak lompat-lompat tiap refresh)
         self.node_angles = {}
         # graf relasi lama dianggap kedaluwarsa
         self._LINK_TTL = 60.0
+        # mode layout: 'radial' (proporsional RTT) | 'cluster' (kedekatan)
+        self.layout_mode = 'radial'
+        # cache cluster stabil (histeresis)
+        self._clusters = {}
 
         # callback dipanggil tiap ada alert baru (untuk notifikasi/auto-def)
         self.on_alerts = None
@@ -74,6 +80,8 @@ class Monitor(object):
             # reset peta host agar sisa sesi lama (termasuk MAC spoof)
             # tidak terbawa; akan diisi ulang oleh scan + sniffer
             self.hosts = {}
+            self.rtt = {}
+            self.rtt_hist = {}
             self.detector.set_gateway(self.gw.get('ip'), self.gw.get('mac'),
                                       self.iface)
             self.detector.set_my_ip(self.my.get('ip'))
@@ -278,7 +286,14 @@ class Monitor(object):
             logger.error('scan err: {}'.format(e))
 
     def _measure_rtt(self, ips):
-        """Ukur RTT (ping) paralel untuk semua host. Gateway & self di-skip."""
+        """Ukur RTT (ping) paralel untuk semua host, dengan smoothing.
+
+        RTT WiFi ber-jitter (bisa berubah 10x antar-pengukuran). Supaya
+        klasifikasi kedekatan stabil, kita:
+          - kirim 4 paket ping per host, ambil MINIMUM (paling stabil,
+            mewakili latensi dasar tanpa antrean)
+          - simpan riwayat, lalu pakai MEDIAN dari beberapa ukuran
+        """
         from concurrent.futures import ThreadPoolExecutor
         gw_ip = self.gw.get('ip')
         my_ip = self.my.get('ip')
@@ -286,14 +301,19 @@ class Monitor(object):
 
         def _one(ip):
             try:
-                p = sp.Popen(['ping', '-c', '1', '-W', '1', ip],
+                p = sp.Popen(['ping', '-c', '4', '-i', '0.2', '-W', '1', ip],
                              stdout=sp.PIPE, stderr=sp.PIPE)
-                out, _ = p.communicate(timeout=2)
+                out, _ = p.communicate(timeout=5)
                 text = out.decode('utf-8', 'ignore')
+                vals = []
                 for line in text.splitlines():
                     if 'time=' in line:
-                        val = line.split('time=')[-1].split()[0]
-                        return ip, float(val)
+                        try:
+                            vals.append(float(line.split('time=')[-1].split()[0]))
+                        except Exception:
+                            pass
+                if vals:
+                    return ip, min(vals)   # minimum = latensi dasar
             except Exception:
                 pass
             return ip, None
@@ -306,9 +326,16 @@ class Monitor(object):
             return
         with ThreadPoolExecutor(max_workers=min(len(targets), 32)) as pool:
             for ip, rtt in pool.map(_one, targets):
+                if rtt is None:
+                    continue
                 with self.lock:
-                    if rtt is not None:
-                        self.rtt[ip] = rtt
+                    hist = self.rtt_hist.setdefault(ip, [])
+                    hist.append(rtt)
+                    if len(hist) > 5:
+                        del hist[:-5]
+                    # median dari riwayat -> stabil
+                    s = sorted(hist)
+                    self.rtt[ip] = s[len(s) // 2]
 
     # ── evaluasi & alert ───────────────────────────────────────────
     def _emit_alerts(self):
@@ -530,12 +557,178 @@ class Monitor(object):
                 node['pos']['x'] += sgn * ux * push
                 node['pos']['y'] += sgn * uy * push
 
-    def topology(self):
+    def _affinity(self, a, b):
+        """
+        Skor kedekatan 0..1 antara dua IP (a,b).
+
+        Berbasis sinyal yang BENAR-BENAR tersedia:
+          - selisih RTT (makin mirip -> makin dekat)   bobot 0.55
+          - ada komunikasi ARP a<->b                    bobot 0.30
+          - keduanya sama-sama dekat router              bobot 0.15
+        """
+        import math as _m
+        ra, rb = self.rtt.get(a), self.rtt.get(b)
+
+        def _logv(x):
+            if x is None or x <= 0:
+                return None
+            return _m.log10(x)
+
+        la, lb = _logv(ra), _logv(rb)
+        # rentang log RTT
+        vals = [_logv(v) for v in self.rtt.values() if v and v > 0]
+        span = (max(vals) - min(vals)) if vals else 1.0
+        span = max(span, 0.3)
+
+        # 1. kemiripan RTT
+        if la is None or lb is None:
+            sim = 0.4   # tidak diketahui -> netral-rendah
+        else:
+            sim = 1.0 - min(1.0, abs(la - lb) / span)
+
+        # 2. relasi ARP (saling bicara)
+        link = 1.0 if (b in self.arp_links.get(a, {}) or
+                       a in self.arp_links.get(b, {})) else 0.0
+
+        # 3. keduanya dekat router (RTT di bawah median)
+        near = 0.0
+        if ra and rb and ra > 0 and rb > 0:
+            med_vals = sorted(v for v in self.rtt.values() if v and v > 0)
+            if med_vals:
+                med = med_vals[len(med_vals) // 2]
+                if ra <= med and rb <= med:
+                    near = 1.0
+
+        return 0.55 * sim + 0.30 * link + 0.15 * near
+
+    def _layout_cluster(self, ips, gw_ip, my_ip, rtt_radius):
+        """
+        Tata letak BERBASIS KEDEKATAN (affinity clustering).
+
+        - Node dikelompokkan: yang affinity-nya tinggi jadi satu cluster.
+        - Tiap cluster dapat SEKTOR sudut (busur) di lingkarannya.
+        - Cluster diurutkan dari atas (jam 12) searah jarum jam, mulai
+          dari yang terdekat ke router.
+        - Perangkat sendiri (my_ip) ikut sebagai anggota (bukan dipaku).
+        - Dalam cluster, node disebar RAPAT -> tampak berkelompok.
+
+        Mengembalikan {ip: (x, y, radius, cluster_id, cluster_label)}.
+        """
+        import math as _m
+        res = {}
+        if gw_ip:
+            res[gw_ip] = (0.5, 0.5, 0.0, -1, 'Router')
+
+        members = [ip for ip in ips if ip not in (gw_ip,)]
+        if not members:
+            return res
+
+        # ── 1. clustering sederhana (agglomerative threshold) ──
+        # urutkan berdasar RTT (yang diketahui dulu)
+        def _rk(ip):
+            r = self.rtt.get(ip)
+            return r if (r is not None and r > 0) else 1e9
+
+        members.sort(key=_rk)
+
+        # Radius (jarak ke router) tiap node; node dengan radius mirip
+        # dianggap berada di "kelas jarak" yang sama -> satu cluster.
+        def _rad(ip):
+            return rtt_radius(self.rtt.get(ip))
+
+        # ambang selisih radius untuk digabung ke cluster yang sama
+        # (diperbesar: device WiFi bersebelahan sering beda RTT beberapa ms)
+        RAD_EPS = 0.18
+        clusters = []
+        for ip in members:
+            ri = _rad(ip)
+            placed = False
+            for cl in clusters:
+                # rata-rata radius cluster
+                rcs = [_rad(m) for m in cl]
+                if rcs and abs(ri - sum(rcs) / len(rcs)) <= RAD_EPS:
+                    cl.append(ip)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([ip])
+
+        # gabungkan juga kalau affinity tinggi (mis. sering saling ARP)
+        merged = True
+        while merged:
+            merged = False
+            for i in range(len(clusters)):
+                if merged:
+                    break
+                for j in range(i + 1, len(clusters)):
+                    affs = [self._affinity(a, b)
+                            for a in clusters[i] for b in clusters[j]]
+                    if affs and (sum(affs) / len(affs)) >= 0.6:
+                        clusters[i] += clusters[j]
+                        clusters.pop(j)
+                        merged = True
+                        break
+
+        # ── 2. hitung rata-rata RTT & radius tiap cluster ──
+        def _avg_radius(cl):
+            rs = [self.rtt.get(ip) for ip in cl
+                  if self.rtt.get(ip) and self.rtt.get(ip) > 0]
+            if not rs:
+                return 0.33
+            return rtt_radius(sum(rs) / len(rs))
+
+        cl_info = []
+        for cl in clusters:
+            cl_info.append({'members': cl, 'radius': _avg_radius(cl)})
+        # urutkan cluster dari yang TERDEKAT ke router
+        cl_info.sort(key=lambda c: c['radius'])
+
+        # ── 3. tata letak: tiap cluster dapat SATU SUDUT (center),
+        #    anggotanya diletakkan RAPAT mengelilingi center tsb ──
+        ncl = max(len(cl_info), 1)
+        step = 2 * _m.pi / ncl
+        ang = -_m.pi / 2   # mulai dari atas (jam 12), searah jarum jam
+        SPREAD = 0.045     # radius sebaran anggota di dalam cluster (sangat rapat)
+        for ci, c in enumerate(cl_info):
+            r = c['radius']              # jarak cluster-center dari router
+            cx = 0.5 + r * _m.cos(ang)
+            cy = 0.5 + r * _m.sin(ang)
+            label = 'Dekat' if r < 0.25 else ('Sedang' if r < 0.38 else 'Jauh')
+            mcl = c['members']
+            cnt = len(mcl)
+            if cnt == 1:
+                # sendiri -> tepat di center
+                ip = mcl[0]
+                if self.detector.threat_map().get(ip) == 'attacker':
+                    rr = 0.40
+                    res[ip] = (0.5 + rr * _m.cos(ang), 0.5 + rr * _m.sin(ang),
+                               rr, ci, label)
+                else:
+                    res[ip] = (cx, cy, r, ci, label)
+            else:
+                # melingkar rapat di sekitar center cluster
+                for k, ip in enumerate(mcl):
+                    a2 = 2 * _m.pi * k / cnt
+                    x = cx + SPREAD * _m.cos(a2)
+                    y = cy + SPREAD * _m.sin(a2)
+                    rr = _m.hypot(x - 0.5, y - 0.5)
+                    if self.detector.threat_map().get(ip) == 'attacker':
+                        rr = 0.40
+                        x = 0.5 + rr * _m.cos(ang)
+                        y = 0.5 + rr * _m.sin(ang)
+                    res[ip] = (x, y, rr, ci, label)
+            ang += step
+
+        return res
+
+    def topology(self, mode=None):
         """
         Hasilkan graf jaringan untuk visualisasi 2D.
 
-        PENTING: posisi node adalah ESTIMASI TOPOLOGI berdasarkan RTT &
-        aktivitas ARP — BUKAN lokasi fisik. Dilabeli demikian di UI.
+        mode: 'radial'  -> posisi proporsional RTT dari router (default)
+              'cluster' -> dikelompokkan berdasarkan kedekatan (affinity)
+
+        PENTING: posisi node adalah ESTIMASI, bukan lokasi fisik.
         """
         import math
         with self.lock:
@@ -595,14 +788,31 @@ class Monitor(object):
                 lo, hi = 1.0, 100.0
             log_lo = _m.log10(lo)
             log_hi = _m.log10(hi)
-            R_MIN, R_MAX = 0.16, 0.48   # radius terdekat .. terjauh
+            R_MIN, R_MAX = 0.18, 0.40   # radius dipersempit supaya device
+                                          # LAN serumpun tidak terpencar
+
+            # Noise floor: RTT di bawah ambang ini adalah noise WiFi
+            # (scheduling, contention), BUKAN perbedaan jarak fisik.
+            # Device bersebelahan di WiFi bisa beda 1-5ms tanpa jarak.
+            NOISE_FLOOR = max(5.0, lo * 2)
 
             def _rtt_radius(rtt):
                 if rtt is None or rtt <= 0:
-                    return (R_MIN + R_MAX) / 2.0   # tanpa RTT -> tengah
-                frac = (_m.log10(max(rtt, lo)) - log_lo) / max(log_hi - log_lo, 1e-6)
+                    return (R_MIN + R_MAX) / 2.0
+                eff = max(rtt - NOISE_FLOOR, 0.01)
+                eff_lo = max(lo - NOISE_FLOOR, 0.01)
+                eff_hi = max(hi - NOISE_FLOOR, eff_lo * 1.01)
+                frac = (_m.log10(eff) - _m.log10(eff_lo)) / max(
+                    _m.log10(eff_hi) - _m.log10(eff_lo), 1e-6)
                 frac = max(0.0, min(1.0, frac))
                 return R_MIN + (R_MAX - R_MIN) * frac
+
+            # pilih mode layout
+            lay_mode = (mode or self.layout_mode or 'radial').lower()
+            cluster_pos = {}
+            cluster_labels = {}
+            if lay_mode == 'cluster':
+                cluster_pos = self._layout_cluster(ips, gw_ip, my_ip, _rtt_radius)
 
             gw_mac = self.gw.get('mac') or ''
             links_virtual = []
@@ -617,6 +827,13 @@ class Monitor(object):
                     kind = 'gateway'
                     pos = {'x': 0.5, 'y': 0.5, 'r': 0.0, 'ring': -1}
                     label = 'Router / Gateway'
+                elif lay_mode == 'cluster' and ip in cluster_pos:
+                    x, y, rr, ci, cl_label = cluster_pos[ip]
+                    kind = 'self' if is_self else 'host'
+                    pos = {'x': x, 'y': y, 'r': rr, 'ring': round(rr, 3),
+                           'cluster': ci, 'cluster_label': cl_label}
+                    label = (h.get('hostname') or ip)
+                    cluster_labels[ci] = cl_label
                 elif is_self:
                     kind = 'self'
                     pos = {'x': 0.5, 'y': 0.5 + 0.14, 'r': 0.14, 'ring': 0}
@@ -675,7 +892,7 @@ class Monitor(object):
                     continue
                 # taruh di ring terluar, sudut tersebar
                 ang = (idx / max(k, 1)) * 2 * math.pi + math.pi / 4
-                radius = 0.48
+                radius = R_MAX   # konsisten dengan R_MAX baru
                 # coba lacak IP asli penyerang dari data yang ada
                 try:
                     cands, note = self.detector.attacker_ip_candidates(am)
@@ -719,8 +936,12 @@ class Monitor(object):
 
             # ── anti-tumpuk (collision avoidance) ───────────────────
             # Pastikan jarak antar-node >= MIN_DIST supaya tidak bertumpuk
-            # & mudah divisualisasikan. Node digeser sepanjang sudutnya.
-            self._spread_nodes(nodes)
+            # & mudah divisualisasikan. Di mode cluster, ambang lebih kecil
+            # supaya anggota satu cluster tetap tampak berkelompok.
+            if lay_mode == 'cluster':
+                self._spread_nodes(nodes, min_dist=0.075, iterations=80)
+            else:
+                self._spread_nodes(nodes)
 
             # links: hub (semua host -> gateway) + overlay ARP nyata
             links = list(links_virtual)
@@ -757,6 +978,7 @@ class Monitor(object):
                 'self': my_ip,
                 'meta': {
                     'timestamp': now,
+                    'mode': lay_mode,
                     'ap_rssi': ap_rssi,          # RSSI laptop->AP (dBm)
                     'distance_note': 'Estimasi jarak KASAR berbasis RTT '
                                      '& model path-loss (akurasi ±2–5 m). '

@@ -14,6 +14,10 @@ const panelBody = document.getElementById('panel-body');
 const panelTitle = document.getElementById('panel-title');
 const toggleArp = document.getElementById('toggle-arp');
 const toggleRings = document.getElementById('toggle-rings');
+const modeSelect = document.getElementById('mode-select');
+let LAYOUT_MODE = 'radial';
+try { LAYOUT_MODE = localStorage.getItem('nv_mode') || 'radial'; } catch (e) {}
+if (modeSelect) modeSelect.value = LAYOUT_MODE;
 
 let DATA = { nodes: [], links: [], gateway: null, self: null, meta: {} };
 let view = { scale: 1, offsetX: 0, offsetY: 0 };
@@ -97,7 +101,7 @@ function draw() {
     const cx = w / 2 + view.offsetX;
     const cy = h / 2 + view.offsetY;
     // cincin sebagai skala "jarak dari router" (pusat = router)
-    const rings = [0.16, 0.32, 0.48];
+    const rings = [0.15, 0.28, 0.40];
     const labels = ['dekat', 'sedang', 'jauh'];
     ctx.setLineDash([4, 6]);
     for (let i = 0; i < rings.length; i++) {
@@ -115,6 +119,41 @@ function draw() {
       ctx.restore();
     }
     ctx.setLineDash([]);
+  }
+
+  // label cluster (mode cluster) — garis sektor + nama cluster
+  if ((DATA.meta && DATA.meta.mode) === 'cluster') {
+    const byCl = {};
+    for (const n of DATA.nodes) {
+      if (n.pos && n.pos.cluster != null && n.pos.cluster >= 0) {
+        const ci = n.pos.cluster;
+        (byCl[ci] = byCl[ci] || { label: n.pos.cluster_label, pts: [] })
+          .pts.push(n);
+      }
+    }
+    const cx = w / 2 + view.offsetX, cy = h / 2 + view.offsetY;
+    for (const ci in byCl) {
+      const cl = byCl[ci];
+      // garis hubung antar anggota cluster (menandai satu kelompok)
+      ctx.strokeStyle = 'rgba(120,180,255,0.25)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < cl.pts.length; i++) {
+        for (let j = i + 1; j < cl.pts.length; j++) {
+          const pa = toScreen(animPos(cl.pts[i]));
+          const pb = toScreen(animPos(cl.pts[j]));
+          ctx.beginPath(); ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
+          ctx.stroke();
+        }
+      }
+      // label cluster di posisi rata-rata anggotanya
+      let sx = 0, sy = 0;
+      for (const n of cl.pts) { const p = toScreen(animPos(n)); sx += p.x; sy += p.y; }
+      sx /= cl.pts.length; sy /= cl.pts.length;
+      ctx.fillStyle = 'rgba(120,180,255,0.85)';
+      ctx.font = 'bold 11px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillText('cluster: ' + (cl.label || ci), sx, sy - 34);
+    }
   }
 
   const nodeByIp = {};
@@ -344,6 +383,15 @@ document.getElementById('btn-reset').addEventListener('click', () => {
   view = { scale: 1, offsetX: 0, offsetY: 0 };
 });
 
+// ganti mode layout
+if (modeSelect) {
+  modeSelect.addEventListener('change', () => {
+    LAYOUT_MODE = modeSelect.value;
+    try { localStorage.setItem('nv_mode', LAYOUT_MODE); } catch (e) {}
+    refresh();
+  });
+}
+
 // ── panel detail ───────────────────────────────────────────────────
 function selectNode(n) {
   selectedIp = n.ip;
@@ -432,7 +480,7 @@ async function refresh() {
   if (inFlight) return;          // jangan menumpuk kalau request lambat
   inFlight = true;
   try {
-    const r = await fetch('/topology', { cache: 'no-store' });
+    const r = await fetch('/topology?mode=' + LAYOUT_MODE, { cache: 'no-store' });
     const j = await r.json();
     if (j.status === 'success' && j.topology) {
       const prevPos = {};

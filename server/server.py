@@ -265,8 +265,16 @@ def ping():
 # ── Topology View (browser) ────────────────────────────────────────
 @route('/topology')
 def topology():
-    """Data graf jaringan untuk Topology View."""
-    return jresp({'status': 'success', 'topology': monitor.topology()})
+    """Data graf jaringan untuk Topology View.
+
+    Query ?mode=radial | cluster memilih algoritma tata letak.
+    """
+    mode = request.query.get('mode') or None
+    if mode:
+        mode = mode.lower()
+        if mode in ('radial', 'cluster'):
+            monitor.layout_mode = mode
+    return jresp({'status': 'success', 'topology': monitor.topology(mode)})
 
 
 @route('/tv')

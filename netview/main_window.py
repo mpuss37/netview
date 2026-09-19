@@ -18,7 +18,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QTableView,
     QToolBar, QAction, QLabel, QMessageBox, QHeaderView, QApplication,
-    QStyle, QAbstractItemView, QFileDialog, QCheckBox,
+    QAbstractItemView, QFileDialog, QCheckBox,
 )
 
 from . import api, theme
@@ -100,7 +100,6 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         self.setWindowTitle('NetView')
         self.resize(980, 560)
-        self.setWindowIcon(self._icon(QStyle.SP_ComputerIcon))
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -159,52 +158,41 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self.statusBar().showMessage('Siap')
 
-    def _icon(self, sp):
-        return QApplication.style().standardIcon(sp)
-
     def _build_toolbar(self):
         tb = QToolBar()
         tb.setMovable(False)
         self.addToolBar(tb)
 
-        def act(sp, tip, slot, checkable=False):
-            a = QAction(self._icon(sp), tip, self)
+        def act(text, tip, slot, checkable=False):
+            a = QAction(text, self)
             a.setToolTip(tip)
             a.setCheckable(checkable)
             a.triggered.connect(slot)
             tb.addAction(a)
             return a
 
-        self.act_refresh = act(QStyle.SP_BrowserReload, 'Refresh', self.refresh)
-        self.act_scan = act(QStyle.SP_FileDialogContentsView, 'Scan sekarang',
-                            self._on_scan)
-        self.act_monitor = act(QStyle.SP_MediaPlay, 'Stop/Start monitoring',
+        self.act_refresh = act('Refresh', 'Refresh', self.refresh)
+        self.act_scan = act('Scan', 'Scan sekarang', self._on_scan)
+        self.act_monitor = act('Monitor', 'Stop/Start monitoring',
                                self._on_toggle_monitor)
         tb.addSeparator()
-        self.act_protect = act(QStyle.SP_MessageBoxCritical,
-                               'Aktifkan proteksi device ini',
+        self.act_protect = act('Protect', 'Aktifkan proteksi device ini',
                                self._on_toggle_protect)
-        self.act_auto = act(QStyle.SP_DialogApplyButton,
-                            'Toggle auto-defense', self._on_toggle_auto)
+        self.act_auto = act('Auto-Def', 'Toggle auto-defense', self._on_toggle_auto)
         tb.addSeparator()
-        self.act_notify = act(QStyle.SP_MessageBoxInformation,
-                              'Notifikasi desktop saat ancaman',
+        self.act_notify = act('Notify', 'Notifikasi desktop saat ancaman',
                               self._on_toggle_notify)
-        self.act_settings = act(QStyle.SP_FileDialogDetailedView,
-                                'Pengaturan proteksi & whitelist',
+        self.act_settings = act('Settings', 'Pengaturan proteksi & whitelist',
                                 self._on_settings)
         tb.addSeparator()
-        self.act_clear = act(QStyle.SP_DialogResetButton, 'Bersihkan alerts',
-                             self._on_clear_alerts)
-        self.act_export = act(QStyle.SP_DialogSaveButton, 'Export log (JSON)',
-                              self._on_export)
+        self.act_clear = act('Clear', 'Bersihkan alerts', self._on_clear_alerts)
+        self.act_export = act('Export', 'Export log (JSON)', self._on_export)
         tb.addSeparator()
-        self.act_topology = act(QStyle.SP_ComputerIcon,
-                                'Buka Topology View (browser)',
+        self.act_topology = act('Topology', 'Buka Topology View (browser)',
                                 self._on_open_topology)
         tb.addSeparator()
-        self.act_theme = act(QStyle.SP_DesktopIcon, 'Toggle tema', self._toggle_theme)
-        self.act_exit = act(QStyle.SP_DialogCloseButton, 'Exit', self.close)
+        self.act_theme = act('Tema', 'Toggle tema', self._toggle_theme)
+        self.act_exit = act('Exit', 'Exit', self.close)
 
     # ── preferensi notifikasi ──────────────────────────────────────
     def _load_notify_pref(self):
