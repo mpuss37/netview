@@ -8,6 +8,8 @@ NetView *bertahan* (monitor/deteksi/proteksi). Keduanya bisa berjalan bersamaan.
 
 Antarmuka grafis berbasis **PyQt5** dengan tema **gelap & terang**.
 
+---
+
 ## Fitur
 
 ### Monitoring
@@ -47,28 +49,18 @@ Alert disimpan, dapat difilter, dan diekspor (JSON).
 
 ### Topology View (browser)
 Visualisasi graf jaringan 2D **real-time** di browser (`http://127.0.0.1:8015/tv`):
-- **Router/gateway** di pusat, host mengelilingi (radial).
-- **Penempatan berbasis kedekatan**: host dengan **RTT mirip** diletakkan pada
-  cincin (ring) yang sama sehingga tampak berdekatan; sudut diurutkan berdasarkan
-  RTT (bukan alfabet IP).
-- **Anti-tumpuk**: server menjamin jarak antar-node ≥ ambang (node digeser
-  sepanjang cincinnya), plus pass pemisahan halus di browser. Node tidak bertumpuk.
-- **Estimasi jarak** per perangkat (cm/mm/m) berbasis RTT — ditampilkan di
-  tooltip & panel. Akurasi **±2–5 m** (estimasi, bukan ukur).
+- **Router/gateway** di pusat, host mengelilingi (radial / cluster).
+- Penempatan berbasis kedekatan (RTT mirip → cincin sama).
+- Anti-tumpuk + estimasi jarak per perangkat (berbasis RTT, akurasi ±2–5 m).
 - Warna node: router (biru), perangkat ini (hijau), normal (abu),
   mencurigakan (oranye), **penyerang (merah + berdenyut)**.
-- Garis: hub ke gateway + overlay komunikasi ARP nyata.
-- **Garis putus merah berdenyut** dari penyerang ke gateway (indikasi MITM).
 - Panel samping kanan: info host + tombol whitelist.
 - Hover tooltip, zoom (scroll), pan (drag), toggle garis/cincin.
 
-> ⚠️ **Penting:** posisi & jarak node adalah **estimasi topologi** berdasarkan
-> **RTT/latency** — **BUKAN lokasi fisik** sebenarnya. ARP tidak membawa informasi
-> lokasi; ini bukan GPS. Label ini juga ditampilkan di UI.
+> ⚠️ Posisi & jarak node adalah **estimasi topologi** dari **RTT/latency** —
+> **BUKAN lokasi fisik**. ARP tidak membawa informasi lokasi; ini bukan GPS.
 
-Buka dari browser: `http://127.0.0.1:8015/tv`
-Atau klik tombol **Topology View** di toolbar GUI desktop.
-- Tema gelap/terang (tersimpan di `~/.netview/`)
+---
 
 ## Arsitektur
 ```
@@ -86,35 +78,208 @@ server/
     detector.py          8 aturan deteksi ARP spoof
     defense.py           hardening + auto-defense
     utils.py             scan, ARP table, vendor, hostname
+    netviewd.init        service OpenRC (Artix)
     web/                 Topology View (browser)
         index.html
         style.css
         topology.js      canvas 2D render + real-time poll
 ```
 
-GUI dan daemon terpisah lewat HTTP API di `127.0.0.1:8015`.
+GUI dan daemon terpisah lewat HTTP API di **`127.0.0.1:8015`**.
 Topology View diserve sebagai halaman web dari daemon yang sama (`/tv`).
 
-## Instalasi (sistem ini)
-Sudah terpasang:
-- Aplikasi: `/opt/netview/`
-- Launcher: `/usr/bin/netview`
-- Service: `/etc/init.d/netviewd` (aktif saat boot, port 8015)
-- Menu: `/usr/share/applications/netview.desktop`
+---
 
-## Menjalankan
+## Dukungan Platform
+
+| OS | GUI (PyQt5) | Daemon (monitor / deteksi / proteksi) | Catatan |
+|----|:-----------:|:-------------------------------------:|---------|
+| **Arch Linux** | ✅ | ✅ full | systemd |
+| **Ubuntu 22.04+** | ✅ | ✅ full | systemd |
+| **Linux Mint 21/22** | ✅ | ✅ full | systemd |
+| **Artix / OpenRC** | ✅ | ✅ full | sudah ada `build.sh` + `netviewd.init` |
+| **Windows (WSL2)** | ✅ | ✅ full | Jalankan di dalam WSL2 — **cara disarankan** |
+| **Windows (native)** | ✅ | ❌ tidak bisa | Butuh `fcntl`, `arptables`, raw socket → tidak ada |
+| **Termux (Android)** | ⚠️ | ❌ non-root / ✅ root | Butuh **root** + XServer |
+
+> **Penting:** Daemon **wajib root** dan **wajib Linux** (sniffer ARP raw socket
+> + `arptables` + `ip neigh`). Di Windows native `fcntl` tidak ada → daemon gagal.
+> **Gunakan WSL2** di Windows.
+
+---
+
+## Dependensi
+
+**Python (via `requirements.txt`):**
+`PyQt5`, `bottle`, `waitress`, `scapy`, `netifaces`, `setproctitle`,
+`requests`, `psutil`
+
+**Alat sistem:**
+`arptables`, `arp-scan` / `arping`, `ip` (iproute2), `nginx`? (tidak perlu),
+`nmap` (opsional), `arp` (net-tools, opsional).
+
+---
+
+## Instalasi
+
+### Arch Linux
+
 ```bash
-sudo rc-service netviewd start      # jalankan daemon
-sudo netview                        # buka GUI (auto-start daemon bila perlu)
+sudo pacman -S --needed python python-pip python-pyqt5 \
+    iproute2 arptables arp-scan nmap net-tools git
+
+git clone https://github.com/mpuss37/netview.git
+cd netview
+
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Deploy
+sudo mkdir -p /opt/netview
+sudo cp -a netview server assets /opt/netview/
+sudo cp launcher /usr/bin/netview && sudo chmod 755 /usr/bin/netview
 ```
 
+### Ubuntu 22.04 / 24.04
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv python3-pyqt5 \
+    iproute2 arptables arp-scan nmap net-tools git
+
+git clone https://github.com/mpuss37/netview.git
+cd netview
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+sudo mkdir -p /opt/netview
+sudo cp -a netview server assets /opt/netview/
+sudo cp launcher /usr/bin/netview && sudo chmod 755 /usr/bin/netview
+```
+
+> Pada Ubuntu 24.04 `arptables` bisa bernama `arptables-nft`
+> (`sudo apt install arptables-nft`).
+
+### Linux Mint 21 / 22
+
+Sama seperti Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-venv python3-pyqt5 \
+    iproute2 arptables arp-scan nmap net-tools git
+git clone https://github.com/mpuss37/netview.git
+cd netview
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+sudo mkdir -p /opt/netview && sudo cp -a netview server assets /opt/netview/
+sudo cp launcher /usr/bin/netview && sudo chmod 755 /usr/bin/netview
+```
+
+### Windows (disarankan: WSL2)
+
+Daemon tidak bisa jalan di Windows native → pakai **WSL2** (Ubuntu penuh):
+
+```powershell
+wsl --install -d Ubuntu     # sekali saja, di PowerShell (admin)
+```
+
+Lalu **di dalam WSL2**, ikuti langkah **Ubuntu** di atas. GUI tampil lewat
+**WSLg** (Windows 11 / 10 terbaru). Jalankan: `sudo netview`.
+
+### Windows (native — GUI saja)
+
+```powershell
+# Pasang Python 3.11+ (https://python.org) dan Npcap (https://npcap.com/)
+pip install PyQt5 bottle waitress scapy netifaces requests psutil
+```
+
+> Daemon gagal start (`fcntl` tidak ada). Fitur proteksi/deteksi butuh Linux.
+
+### Termux (Android)
+
+```bash
+pkg update && pkg upgrade
+pkg install -y python clang git x11-repo python-pyqt5
+pip install bottle waitress scapy netifaces requests psutil
+```
+
+- **Monitor/deteksi/proteksi butuh root** (raw socket + arptables).
+  Tanpa root hanya GUI tampil.
+- GUI: jalankan **Termux:X11** / **XServer XSDL**, set `export DISPLAY=:0`.
+
+---
+
+## Service (auto-start daemon)
+
+### systemd (Arch / Ubuntu / Mint)
+
+Buat `/etc/systemd/system/netviewd.service`:
+
+```ini
+[Unit]
+Description=NetView daemon (ARP monitor & spoof detector)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/netview/server/server.py
+WorkingDirectory=/opt/netview/server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo mkdir -p /var/log/netview
+sudo systemctl daemon-reload
+sudo systemctl enable --now netviewd
+sudo systemctl status netviewd
+```
+
+### OpenRC (Artix)
+
+```bash
+sudo ./build.sh     # menyediakan build.sh + server/netviewd.init
+```
+
+---
+
+## Menjalankan
+
+```bash
+sudo systemctl start netviewd      # daemon (systemd)
+sudo netview                       # buka GUI (auto-start daemon bila perlu)
+```
+
+OpenRC:
+
+```bash
+sudo rc-service netviewd start
+sudo netview
+```
+
+Topology View: buka `http://127.0.0.1:8015/tv` atau klik tombol
+**Topology View** di toolbar GUI.
+
+---
+
 ## Konfigurasi
+
 - Whitelist: `~/.netview/whitelist.json`
 - Preferensi tema: `~/.netview/netview.conf`
 - Preferensi notifikasi: `~/.netview/notify.conf`
 - Log daemon: `/var/log/netview/`
 
+---
+
 ## Catatan & Batasan
+
 - Daemon butuh **root** (sniffer ARP + arptables).
 - Pada beberapa AP yang mem-bridge trafik klien secara langsung, sniffer
   mungkin tidak melihat semua ARP unicast; **broadcast ARP & gratuitous ARP
@@ -126,13 +291,27 @@ sudo netview                        # buka GUI (auto-start daemon bila perlu)
   (atau matikan proteksi NetView saat melakukan uji spoof).
 - `arptables` NetView memakai policy **DROP** saat proteksi aktif — pastikan
   gateway terdeteksi dengan benar sebelum mengaktifkan.
+- **Windows native & Termux non-root tidak dapat menjalankan daemon.**
 
-## Dependensi
-Python 3, PyQt5, bottle, waitress, scapy, netifaces, setproctitle, requests.
-Alat sistem: `arptables`, `arp-scan`/`arping`, `nmap` (opsional), `ip`.
+---
 
-Lihat `requirements.txt`.
+## Troubleshooting
 
-## Terkait
-- **NetControl** — alat *ofensif* (cut / limit bandwidth / ping flood).
-  NetView adalah pasangan defensifnya.
+| Masalah | Penyebab / Solusi |
+|---|---|
+| `NameError: QApplication is not defined` | Versi lama; sudah diperbaiki. `git pull`. |
+| `ModuleNotFoundError: fcntl` (Windows) | Daemon tidak untuk Windows native → WSL2. |
+| Daemon gagal start | Cek `/var/log/netview/netviewd.out`; jalankan sebagai root. |
+| `arptables: command not found` | Pasang `arptables` / `arptables-nft`. |
+| Proteksi memblokir internet | Gateway salah terdeteksi → matikan proteksi, refresh, cek gateway. |
+| Topology kosong | Pastikan daemon jalan & monitoring ON; buka `/tv`. |
+| GUI tidak muncul di WSL2 | `wsl --update`; pastikan WSLg aktif. |
+| GUI tidak muncul di Termux | Jalankan XServer, set `DISPLAY`. |
+
+---
+
+## Etika & Legal
+
+NetView memantau paket ARP di jaringan. Gunakan hanya di jaringan yang
+**Anda miliki / kelola** atau dengan izin. Sniffing jaringan pihak lain
+tanpa izin **melanggar hukum**.

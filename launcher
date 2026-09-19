@@ -3,9 +3,29 @@
 #  NetView launcher
 #  Otomatis: cek daemon -> start kalau perlu -> buka GUI (PyQt5)
 #  Pakai:  sudo netview
+#
+#  Lokasi kode dideteksi otomatis, berurutan:
+#    1. $NETVIEW_DIR      (env override)
+#    2. /opt/netview      (hasil instalasi build.sh / manual)
+#    3. salah satu path kandidat development yang ada
 # ============================================================
 
-SRC_DIR="/home/mpuss/test/netview"
+find_src() {
+    [ -n "$NETVIEW_DIR" ] && [ -d "$NETVIEW_DIR/netview" ] && {
+        echo "$NETVIEW_DIR"; return; }
+    for d in /opt/netview "$HOME/test/netview" \
+             "$(cd "$(dirname "$0")" 2>/dev/null && pwd)"; do
+        [ -n "$d" ] && [ -d "$d/netview" ] && [ -f "$d/server/server.py" ] && {
+            echo "$d"; return; }
+    done
+}
+
+SRC_DIR="$(find_src)"
+if [ -z "$SRC_DIR" ]; then
+    echo "[!] Tidak menemukan direktori NetView."
+    echo "    Set manual:  export NETVIEW_DIR=/path/ke/netview"
+    exit 1
+fi
 DAEMON="$SRC_DIR/server/server.py"
 LOG="/var/log/netview/netviewd.out"
 PORT=8015

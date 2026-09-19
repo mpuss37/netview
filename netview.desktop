@@ -2,9 +2,8 @@
 Name=NetView
 GenericName=Network Monitor & ARP Spoof Detector
 Comment=Monitor network, detect ARP spoofing, protect this device
-Exec=kitty -e sudo /usr/bin/netview
-Icon=netview.png
-Type=Application
-Terminal=false
+Exec=sudo /usr/bin/netview
+Icon=none
+Terminal=true
 StartupNotify=true
 Categories=Utility;Security;Network;
